@@ -1,0 +1,1052 @@
+import {
+    BookContents,
+    BookFile,
+    BookFileEntry,
+    BookHeader,
+    WikiBookData,
+    WikiBookEntry,
+} from './types/books';
+import { promises as fs } from 'fs';
+import path from 'path';
+import chalk from 'chalk';
+import { FeatFile, FeatFileEntry, WikiFeatData } from './types/feat';
+import {
+    ItemBaseFile,
+    ItemFile,
+    ItemFileEntry,
+    ItemProperty,
+    ItemType,
+    WikiItemData,
+    WikiItemPropertyData,
+    WikiItemTypeData,
+} from './types/items';
+import { parseContent } from './contentGen.js';
+import { mwUtil } from './config.js';
+import * as XSLX from 'xlsx';
+import { SpellFile, SpellFileEntry, WikiSpellData } from './types/spells';
+
+export const createOutputFolders = async () => {
+    // delete ./output folder and all files
+    try {
+        await fs.access('./output');
+        await fs.rm('./output', { recursive: true, force: true });
+    } catch (error) {
+        // do nothing, folder does not exist
+    }
+    const dirs = ['collection', 'item', 'spell'];
+    for (const dir of dirs) {
+        const dirPath = path.join('./output', dir);
+        try {
+            await fs.access(dirPath);
+        } catch (error) {
+            await fs.mkdir(dirPath, { recursive: true });
+        }
+    }
+    return true;
+};
+
+export const escapeId = (id: string): string => {
+    let output = id;
+    // replace "|" with "@"
+    output = output.replace(/\|/g, '@');
+    // replace "/" with "__"
+    output = output.replace(/\//g, '__');
+    return output;
+};
+
+class Logger {
+    logs: {
+        source: string;
+        message: string;
+    }[] = [];
+    log(source: string, message: string) {
+        this.logs.push({ source, message });
+    }
+    async generateFile() {
+        const outputPath = './output/logs.json';
+        const output = {
+            type: 'logs',
+            data: this.logs,
+        };
+        await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+    }
+}
+export const logger = new Logger();
+
+type I18nEntry =
+    | {
+          lang: 'en';
+          id: string;
+          name_en: string;
+          source: string;
+      }
+    | {
+          lang: 'zh';
+          id: string;
+          name_en: string;
+          name_zh: string;
+          source: string;
+      };
+
+type I18nJoinedEntry = {
+    id: string;
+    name_en: string;
+    zh_name?: string;
+    zh_name_engname?: string;
+    source: string;
+};
+
+class IdMgr {
+    dataset: any;
+
+    workBook: XSLX.WorkBook = XSLX.utils.book_new();
+
+    constructor() {}
+
+    static matchArrays(a: string[], b: string[]): boolean {
+        return a.some(itemA => b.includes(itemA));
+    }
+
+    compare<T>(
+        dataType: string,
+        data: {
+            en: T[];
+            zh: T[];
+        },
+        fn: {
+            getId: (item?: T | null) => string;
+            getZhTitle: (item: T) => string | null;
+            getEnTitle: (item: T) => string | null;
+        }
+    ) {
+        this.dataset[dataType] = {
+            needZh: [],
+            needEn: [],
+            matched: [],
+        };
+        const dataSet = this.dataset[dataType];
+        const enIds = data.en.map(fn.getId);
+        const zhIds = data.zh.map(fn.getId);
+        for (const enId of enIds) {
+            if (!zhIds.includes(enId)) {
+                dataSet.needZh.push({
+                    id: enId,
+                    en: fn.getEnTitle(data.en.find(item => fn.getId(item) === enId)!),
+                    zh: null,
+                });
+            }
+        }
+        for (const zhId of zhIds) {
+            if (!enIds.includes(zhId)) {
+                dataSet.needEn.push({
+                    id: zhId,
+                    en: null,
+                    zh: fn.getZhTitle(data.zh.find(item => fn.getId(item) === zhId)!),
+                });
+            }
+        }
+        for (const enItem of data.en) {
+            const enId = fn.getId(enItem);
+            const zhItem = data.zh.find(item => fn.getId(item) === enId);
+            if (zhItem) {
+                dataSet.matched.push({
+                    id: enId,
+                    en: fn.getEnTitle(enItem),
+                    zh: fn.getZhTitle(zhItem),
+                });
+            }
+        }
+
+        const sheetData: string[][] = [];
+
+        // if a sheet with the same name already exists, append data to it (without header)
+
+        for (const item of dataSet.matched) {
+            sheetData.push([item.id, item.en || '', item.zh || '']);
+        }
+        for (const item of dataSet.needEn) {
+            sheetData.push([item.id, item.en || '', item.zh || '']);
+        }
+        for (const item of dataSet.needZh) {
+            sheetData.push([item.id, item.en || '', item.zh || '']);
+        }
+
+        const currentSheet = this.workBook.Sheets[dataType];
+        if (currentSheet) {
+            XSLX.utils.sheet_add_aoa(currentSheet, sheetData, { origin: -1 });
+        } else {
+            const header = ['ID', 'EN Title', 'ZH Title'];
+            sheetData.unshift(header);
+            const sheet = XSLX.utils.aoa_to_sheet(sheetData);
+            XSLX.utils.book_append_sheet(this.workBook, sheet, dataType);
+        }
+    }
+
+    async generateFiles() {
+        const outputPath = './output/idMgr.json';
+        const output = {
+            type: 'idMgr',
+            dataset: this.dataset,
+        };
+        await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        try {
+            await XSLX.writeFile(this.workBook, './output/idMgr.xlsx');
+        } catch (error) {
+            if (error instanceof Error) {
+                console.error('生成ID管理器Excel文件失败:', error.name);
+            }
+            console.error('生成ID管理器Excel文件失败:', error);
+        }
+    }
+}
+export const idMgr = new IdMgr();
+
+interface DataMgr<T> {
+    getId: (item: T) => string;
+}
+
+class BookMgr implements DataMgr<BookFileEntry> {
+    raw: {
+        zh: BookFile | null;
+        en: BookFile | null;
+    } = {
+        zh: null,
+        en: null,
+    };
+    db: Map<string, WikiBookData> = new Map();
+    constructor() {}
+    getId(book: BookFileEntry): string {
+        return book.id;
+    }
+    static parseBookHeader(contents?: BookContents[]): BookHeader[] {
+        if (!contents) return [];
+        const headers: BookHeader[] = [];
+        for (const content of contents) {
+            const header: BookHeader = {
+                name: content.name,
+                subHeaders: [],
+            };
+            if (content.headers) {
+                for (const subHeader of content.headers) {
+                    if (!header.subHeaders) {
+                        header.subHeaders = [];
+                    }
+                    if (typeof subHeader === 'string') {
+                        header.subHeaders.push({ name: subHeader });
+                    } else {
+                        header.subHeaders.push({
+                            name: subHeader.header,
+                        });
+                    }
+                }
+            }
+            headers.push(header);
+        }
+        return headers;
+    }
+    static parseBookEntry(entry?: BookFileEntry): WikiBookEntry | null {
+        if (!entry) return null;
+        return {
+            name: entry.name,
+            headers: BookMgr.parseBookHeader(entry.contents),
+        };
+    }
+
+    loadData(zh: BookFile, en: BookFile) {
+        this.raw.zh = zh;
+        this.raw.en = en;
+        this.db.clear();
+
+        idMgr.compare(
+            'book',
+            { en: en.book, zh: zh.book },
+            {
+                getId: item => this.getId(item!),
+                getEnTitle: item => item.name,
+                getZhTitle: item => item.name,
+            }
+        );
+
+        for (const enBook of en.book) {
+            const id = this.getId(enBook);
+            const zhBook = zh.book.find(b => this.getId(b) === id);
+            if (!zhBook) {
+                logger.log('BookMgr', `未找到中文版本的书籍：${enBook.name} (${id})`);
+            }
+
+            const bookData: WikiBookData = {
+                dataType: 'book',
+                uid: `book_${id}`,
+                id: id,
+                mainSource: {
+                    source: enBook.source,
+                    page: 0,
+                },
+                allSources: [],
+                displayName: {
+                    zh: zhBook ? zhBook.name : null,
+                    en: enBook.name,
+                },
+                group: enBook.group,
+                published: enBook.published,
+                zh: BookMgr.parseBookEntry(zhBook),
+                en: BookMgr.parseBookEntry(enBook)!,
+            };
+
+            this.db.set(id, bookData);
+        }
+    }
+    async generateFiles() {
+        // dertect if there is a './output/collection/bookCollection.json', if yes, delete it
+        const outputPath = './output/collection/bookCollection.json';
+        const output = {
+            type: 'bookCollection',
+            data: Array.from(this.db.values()),
+        };
+        await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+    }
+}
+export const bookMgr = new BookMgr();
+
+class FeatMgr implements DataMgr<FeatFileEntry> {
+    raw: {
+        zh: FeatFile | null;
+        en: FeatFile | null;
+    } = {
+        zh: null,
+        en: null,
+    };
+    db: Map<string, WikiFeatData> = new Map();
+
+    constructor() {}
+    getId(feat: FeatFileEntry): string {
+        return `${feat.name}|${feat.source}`;
+    }
+    loadData(zh: FeatFile, en: FeatFile) {
+        this.raw.zh = zh;
+        this.raw.en = en;
+        this.db.clear();
+
+        idMgr.compare(
+            'feat',
+            { en: en.feat, zh: zh.feat },
+            {
+                getId: item => this.getId(item!),
+                getEnTitle: item => item.name,
+                getZhTitle: item => item.name,
+            }
+        );
+
+        for (const enFeat of en.feat) {
+            const id = this.getId(enFeat);
+            const zhFeat = zh.feat.find(f => this.getId(f) === id);
+            if (!zhFeat) {
+                logger.log('FeatMgr', `未找到中文版本的特性：${enFeat.name} (${id})`);
+            }
+
+            const featData: WikiFeatData = {
+                dataType: 'feat',
+                uid: `feat_${id}`,
+                id: id,
+                mainSource: {
+                    source: enFeat.source,
+                    page: enFeat.page || 0,
+                },
+                displayName: {
+                    zh: zhFeat ? zhFeat.name : null,
+                    en: enFeat.name,
+                },
+                allSources: (() => {
+                    const sources: { source: string; page: number }[] = [];
+                    if (enFeat.source) {
+                        sources.push({ source: enFeat.source, page: enFeat.page || 0 });
+                    }
+                    if (enFeat.additionalSources) {
+                        sources.push(...enFeat.additionalSources);
+                    }
+                    return sources;
+                })(),
+                zh: zhFeat
+                    ? {
+                          name: zhFeat.name,
+                          entries: zhFeat.entries,
+                          html: parseContent(zhFeat.entries),
+                      }
+                    : null,
+                en: {
+                    name: enFeat.name,
+                    entries: enFeat.entries,
+                    html: parseContent(enFeat.entries),
+                },
+            };
+
+            this.db.set(id, featData);
+        }
+        // add orphan zh feats to idMgr
+    }
+
+    async generateFiles() {
+        const outputPath = './output/collection/featCollection.json';
+
+        const output = {
+            type: 'featCollection',
+            data: Array.from(this.db.values()),
+        };
+        await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+    }
+}
+export const featMgr = new FeatMgr();
+
+class ItemPropertyMgr implements DataMgr<ItemProperty> {
+    raw: {
+        zh: ItemProperty[] | null;
+        en: ItemProperty[] | null;
+    } = {
+        zh: null,
+        en: null,
+    };
+    db: Map<string, WikiItemPropertyData> = new Map();
+    constructor() {}
+    getId(item: ItemProperty) {
+        return `${item.abbreviation.trim()}|${item.source}`;
+    }
+    loadData(zh: ItemBaseFile, en: ItemBaseFile) {
+        this.raw.zh = zh.itemProperty || null;
+        this.raw.en = en.itemProperty || null;
+        if (!this.raw.zh) {
+            console.warn(chalk.yellow(`未找到中文物品属性数据`));
+        }
+        if (!this.raw.en) {
+            console.warn(chalk.yellow(`未找到英文物品属性数据`));
+        }
+        this.db.clear();
+
+        const getPropertyName = (item: ItemProperty) => {
+            if (item.entries && item.entries.length > 0) {
+                const firstEntry = item.entries[0];
+                if (
+                    typeof firstEntry !== 'string' &&
+                    firstEntry.type == 'entries' &&
+                    firstEntry.name
+                ) {
+                    return firstEntry.name;
+                }
+            }
+            if (item.name) {
+                return item.name;
+            }
+            return item.abbreviation;
+        };
+
+        idMgr.compare(
+            'itemProperty',
+            { en: en.itemProperty, zh: zh.itemProperty },
+            {
+                getId: item => this.getId(item!),
+                getEnTitle: getPropertyName,
+                getZhTitle: getPropertyName,
+            }
+        );
+
+        for (const enProperty of en.itemProperty) {
+            const id = this.getId(enProperty);
+            const zhProperty = zh.itemProperty?.find(p => this.getId(p) === id);
+            if (!zhProperty) {
+                logger.log(
+                    'ItemPropertyMgr',
+                    `未找到中文物品属性：${enProperty.abbreviation} (${id})`
+                );
+            }
+            const propertyData: WikiItemPropertyData = {
+                dataType: 'itemProperty',
+                uid: `itemProperty_${id}`,
+                id: id,
+                abbreviation: enProperty.abbreviation,
+                mainSource: {
+                    source: enProperty.source,
+                    page: enProperty.page || 0,
+                },
+                allSources: [],
+                displayName: {
+                    zh: zhProperty ? getPropertyName(zhProperty) : null,
+                    en: getPropertyName(enProperty),
+                },
+                zh: zhProperty
+                    ? {
+                          entries: zhProperty.entries || [],
+                          name: getPropertyName(zhProperty),
+                          html: parseContent(zhProperty.entries || []),
+                      }
+                    : null,
+                en: {
+                    entries: enProperty.entries || [],
+                    name: getPropertyName(enProperty),
+                    html: parseContent(enProperty.entries || []),
+                },
+            };
+
+            this.db.set(id, propertyData);
+        }
+    }
+    async generateFiles() {
+        const outputPath = './output/collection/itemPropertyCollection.json';
+
+        const output = {
+            type: 'itemPropertyCollection',
+            data: Array.from(this.db.values()),
+        };
+        await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+    }
+}
+export const itemPropertyMgr = new ItemPropertyMgr();
+
+class ItemTypeMgr implements DataMgr<ItemType> {
+    raw: { zh: ItemBaseFile | null; en: ItemBaseFile | null } = {
+        zh: null,
+        en: null,
+    };
+    db: Map<string, WikiItemTypeData> = new Map();
+    constructor() {}
+    getId(item: ItemType) {
+        if (typeof item.source !== 'string') {
+            console.warn(`unexpected itemType source type: ${typeof item.source}`, item.source);
+        }
+        return `${item.abbreviation}|${item.source}`;
+    }
+    loadData(zh: ItemBaseFile, en: ItemBaseFile) {
+        this.raw.zh = zh;
+        this.raw.en = en;
+        this.db.clear();
+
+        idMgr.compare(
+            'itemType',
+            { en: en.itemType, zh: zh.itemType },
+            {
+                getId: item => this.getId(item!),
+                getEnTitle: item => item.name,
+                getZhTitle: item => item.name,
+            }
+        );
+
+        for (const enType of en.itemType) {
+            const id = this.getId(enType);
+            const zhType = zh.itemType.find(t => this.getId(t) === id);
+            if (!zhType) {
+                logger.log('ItemTypeMgr', `未找到中文物品类型：${enType.abbreviation} (${id})`);
+            }
+            const typeData: WikiItemTypeData = {
+                dataType: 'itemType',
+                uid: `itemType_${id}`,
+                id: id,
+                abbreviation: enType.abbreviation,
+                mainSource: {
+                    source: enType.source,
+                    page: enType.page || 0,
+                },
+                allSources: [],
+                displayName: {
+                    zh: zhType ? zhType.name : null,
+                    en: enType.name,
+                },
+                zh: zhType
+                    ? {
+                          name: zhType.name,
+                          entries: zhType.entries || [],
+                          html: parseContent(zhType.entries || []),
+                      }
+                    : null,
+                en: {
+                    name: enType.name,
+                    entries: enType.entries || [],
+                    html: parseContent(enType.entries || []),
+                },
+            };
+
+            this.db.set(id, typeData);
+        }
+    }
+    async generateFiles() {
+        const outputPath = './output/collection/itemTypeCollection.json';
+        try {
+            await fs.access(outputPath);
+            await fs.unlink(outputPath);
+        } catch (error) {
+            // do nothing, file does not exist
+        }
+        const output = {
+            type: 'itemTypeCollection',
+            data: Array.from(this.db.values()),
+        };
+        await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+    }
+}
+export const itemTypeMgr = new ItemTypeMgr();
+
+class BaseItemMgr implements DataMgr<ItemFileEntry> {
+    raw: {
+        zh: ItemBaseFile | null;
+        en: ItemBaseFile | null;
+    } = {
+        zh: null,
+        en: null,
+    };
+    db: Map<string, WikiItemData> = new Map();
+    constructor() {}
+    getId(item: ItemFileEntry): string {
+        if (item.ENG_name) {
+            return `${item.ENG_name.trim()}|${item.source}`;
+        }
+        return `${item.name.trim()}|${item.source}`;
+    }
+
+    static getItemType(item: ItemFileEntry): { type: string; subTypes?: string[] } {
+        let type = 'unknown';
+        let subTypes: string[] = [];
+        if (item.weapon) {
+            type = 'weapon';
+            if (item.sword) {
+                subTypes.push('sword');
+            }
+            if (item.crossbow) {
+                subTypes.push('crossbow');
+            }
+            if (item.axe) {
+                subTypes.push('axe');
+            }
+            if (item.staff) {
+                subTypes.push('staff');
+            }
+            if (item.club) {
+                subTypes.push('club');
+            }
+            if (item.spear) {
+                subTypes.push('spear');
+            }
+            if (item.dagger) {
+                subTypes.push('dagger');
+            }
+            if (item.hammer) {
+                subTypes.push('hammer');
+            }
+            if (item.bow) {
+                subTypes.push('bow');
+            }
+            if (item.mace) {
+                subTypes.push('mace');
+            }
+            if (item.firearm) {
+                subTypes.push('firearm');
+            }
+            if (item.polearm) {
+                subTypes.push('polearm');
+            }
+            if (item.lance) {
+                subTypes.push('lance');
+            }
+            if (item.rapier) {
+                subTypes.push('rapier');
+            }
+            if (item.tattoo) {
+                subTypes.push('tattoo');
+            }
+        } else if (item.ammoType) {
+            type = 'ammo';
+            if (item.arrow) {
+                subTypes.push('arrow');
+            }
+            if (item.bolt) {
+                subTypes.push('bolt');
+            }
+            if (item.cellEnergy) {
+                subTypes.push('cellEnergy');
+            }
+            if (item.bulletFirearm) {
+                subTypes.push('bulletFirearm');
+            }
+            if (item.bulletSling) {
+                subTypes.push('bulletSling');
+            }
+        } else if (item.armor) {
+            type = 'armor';
+            //   subType = 'armor';
+        } else if (item.poison) {
+            type = 'poison';
+            if (item.poisonTypes) {
+                subTypes.push(...item.poisonTypes);
+            }
+        } else if (item.net) {
+            type = 'net';
+        } else {
+            type = 'other';
+        }
+        return { type, subTypes: subTypes.length > 0 ? subTypes : undefined };
+    }
+    static getItemSources(item: ItemFileEntry): { source: string; page: number }[] {
+        const sources: { source: string; page: number }[] = [];
+        if (item.source) {
+            sources.push({ source: item.source, page: item.page || 0 });
+        }
+        if (item.additionalSources) {
+            sources.push(...item.additionalSources);
+        }
+        return sources;
+    }
+    loadData(zh: ItemBaseFile, en: ItemBaseFile) {
+        this.raw.zh = zh;
+        this.raw.en = en;
+        this.db.clear();
+
+        idMgr.compare(
+            'baseitem',
+            { en: en.baseitem, zh: zh.baseitem },
+            {
+                getId: item => this.getId(item!),
+                getEnTitle: item => item.name,
+                getZhTitle: item => item.name,
+            }
+        );
+
+        for (const enItem of en.baseitem) {
+            const id = this.getId(enItem);
+            const zhItem = zh.baseitem.find(i => this.getId(i) === id);
+            if (!zhItem) {
+                logger.log('BaseItemMgr', `未找到中文版本的物品：${enItem.name} (${id})`);
+            }
+            const itemData: WikiItemData = {
+                dataType: 'item',
+                uid: `item_${id}`,
+                id: id,
+                weight: enItem.weight,
+                value: enItem.value || undefined,
+                rarity: enItem.rarity,
+                isBaseItem: true,
+                displayName: {
+                    zh: (() => {
+                        if (!zhItem) return null;
+                        if (zhItem.name.trim() === enItem.name.trim()) return null;
+                        return zhItem.name;
+                    })(),
+                    en: enItem.name,
+                },
+                mainSource: {
+                    source: enItem.source,
+                    page: enItem.page || 0,
+                },
+                allSources: BaseItemMgr.getItemSources(enItem),
+                zh: zhItem
+                    ? {
+                          name: zhItem.name,
+                          entries: zhItem.entries || [],
+                          html: parseContent(zhItem.entries || []),
+                      }
+                    : null,
+                en: {
+                    name: enItem.name,
+                    entries: enItem.entries || [],
+                    html: parseContent(enItem.entries || []),
+                },
+                weapon: enItem.weapon
+                    ? {
+                          category: enItem.weaponCategory!,
+                          dmgs: [enItem.dmg1, enItem.dmg2].filter(d => d !== undefined) || [],
+                          dmgType: enItem.dmgType!,
+                          range: (() => {
+                              if (!enItem.range) return undefined;
+                              const [min, max] = enItem.range?.split('/');
+                              return { min: Number(min), max: Number(max) };
+                          })(),
+                          reload: enItem.reload,
+                          ammoType: enItem.ammoType,
+                      }
+                    : undefined,
+                armor: enItem.armor
+                    ? {
+                          ac: enItem.ac,
+                          maxDexterty: enItem.dexterityMax === null ? true : false,
+                      }
+                    : undefined,
+                charge: enItem.charges
+                    ? {
+                          max: enItem.charges,
+                          rechargeAt: enItem.recharge,
+                          rechargeAmount: enItem.rechargeAmount,
+                      }
+                    : undefined,
+                bonus: {
+                    weapon: Number(enItem.bonusWeapon) || undefined,
+                    weaponAttack: Number(enItem.bonusWeaponAttack) || undefined,
+                    weaponDamage: Number(enItem.bonusWeaponDamage) || undefined,
+                    spellAttack: Number(enItem.bonusSpellAttack) || undefined,
+                    spellSaveDc: Number(enItem.bonusSpellSaveDc) || undefined,
+                    ac: Number(enItem.bonusAc) || undefined,
+                    savingThrow: Number(enItem.bonusSavingThrow) || undefined,
+                    abilityCheck: Number(enItem.bonusAbilityCheck) || undefined,
+                    proficiencyBonus: Number(enItem.bonusProficiencyBonus) || undefined,
+                },
+            };
+
+            this.db.set(id, itemData);
+        }
+    }
+    async generateFiles() {
+        const outputDir = './output/item';
+
+        // for each item in the db, write a file.
+        for (const [id, itemData] of this.db) {
+            const filePath = path.join(outputDir, `${escapeId(id)}.json`);
+            await fs.writeFile(filePath, JSON.stringify(itemData, null, 2), 'utf-8');
+            //     console.log(`已生成物品文件：${ filePath } `);
+        }
+    }
+}
+export const baseItemMgr = new BaseItemMgr();
+class ItemMgr implements DataMgr<ItemFileEntry> {
+    raw: {
+        zh: ItemFile | null;
+        en: ItemFile | null;
+    } = {
+        zh: null,
+        en: null,
+    };
+    db: Map<string, WikiItemData> = new Map();
+    baseItems: BaseItemMgr;
+    constructor(baseItems: BaseItemMgr) {
+        this.baseItems = baseItems;
+    }
+
+    getId(item: ItemFileEntry): string {
+        if (item.ENG_name) {
+            return `${item.ENG_name.trim()}|${item.source}`;
+        }
+        return `${item.name.trim()}|${item.source}`;
+    }
+    loadData(zh: ItemFile, en: ItemFile) {
+        this.raw.zh = zh;
+        this.raw.en = en;
+        this.db.clear();
+
+        idMgr.compare(
+            'item',
+            { en: en.item, zh: zh.item },
+            {
+                getId: item => this.getId(item!),
+                getEnTitle: item => item.name,
+                getZhTitle: item => item.name,
+            }
+        );
+
+        for (const enItem of en.item) {
+            const id = this.getId(enItem);
+
+            const zhItem = zh.item.find(i => this.getId(i) === id);
+            if (!zhItem) {
+                logger.log('ItemMgr', `${id}: 未找到中文版本的物品：${enItem.name} `);
+            }
+            let baseItem: ItemFileEntry | undefined;
+            if (enItem.baseItem?.includes('|')) {
+                const [baseId, source] = enItem.baseItem.split('|').map(s => s.trim());
+                baseItem = this.baseItems.raw.en?.baseitem.find(
+                    i =>
+                        i.name.toLowerCase() === baseId.toLowerCase() &&
+                        i.source.toLowerCase() === source.toLowerCase()
+                );
+            } else {
+                baseItem = this.baseItems.raw.en?.baseitem.find(
+                    i => i.name.toLowerCase() === enItem.baseItem?.toLowerCase()
+                );
+            }
+
+            const itemData: WikiItemData = {
+                dataType: 'item',
+                uid: `item_${id} `,
+                id: id,
+                weight: enItem.weight,
+                value: enItem.value || undefined,
+                rarity: enItem.rarity,
+                isBaseItem: false,
+                baseItem: enItem.baseItem || '',
+                displayName: {
+                    zh: (() => {
+                        if (!zhItem) return null;
+                        if (zhItem.name.trim() === enItem.name.trim()) return null;
+                        return zhItem.name;
+                    })(),
+                    en: enItem.name,
+                },
+                mainSource: {
+                    source: enItem.source,
+                    page: enItem.page || 0,
+                },
+                allSources: BaseItemMgr.getItemSources(enItem),
+
+                zh: zhItem
+                    ? {
+                          name: zhItem.name,
+                          entries: zhItem.entries || [],
+                          html: parseContent(zhItem.entries || []),
+                      }
+                    : null,
+                en: {
+                    name: enItem.name,
+                    entries: enItem.entries || [],
+                    html: parseContent(enItem.entries || []),
+                },
+
+                weapon: enItem.weapon
+                    ? {
+                          category: enItem.weaponCategory!,
+                          dmgs: [enItem.dmg1, enItem.dmg2].filter(d => d !== undefined) || [],
+                          dmgType: enItem.dmgType!,
+                          range: (() => {
+                              if (!enItem.range) return undefined;
+                              const [min, max] = enItem.range?.split('/');
+                              return { min: Number(min), max: Number(max) };
+                          })(),
+                          reload: enItem.reload,
+                          ammoType: enItem.ammoType,
+                      }
+                    : undefined,
+                armor: enItem.armor
+                    ? {
+                          ac: enItem.ac,
+                          maxDexterty: enItem.dexterityMax === null ? true : false,
+                      }
+                    : undefined,
+                charge: enItem.charges
+                    ? {
+                          max: enItem.charges,
+                          rechargeAt: enItem.recharge,
+                          rechargeAmount: enItem.rechargeAmount,
+                      }
+                    : undefined,
+                bonus: {
+                    weapon: Number(enItem.bonusWeapon) || undefined,
+                    weaponAttack: Number(enItem.bonusWeaponAttack) || undefined,
+                    weaponDamage: Number(enItem.bonusWeaponDamage) || undefined,
+                    spellAttack: Number(enItem.bonusSpellAttack) || undefined,
+                    spellSaveDc: Number(enItem.bonusSpellSaveDc) || undefined,
+                    ac: Number(enItem.bonusAc) || undefined,
+                    savingThrow: Number(enItem.bonusSavingThrow) || undefined,
+                    abilityCheck: Number(enItem.bonusAbilityCheck) || undefined,
+                    proficiencyBonus: Number(enItem.bonusProficiencyBonus) || undefined,
+                },
+            };
+
+            this.db.set(id, itemData);
+        }
+    }
+    async generateFiles() {
+        const outputDir = './output/item';
+
+        for (const [id, itemData] of this.db) {
+            const filePath = path.join(outputDir, `${escapeId(id)}.json`);
+            await fs.writeFile(filePath, JSON.stringify(itemData, null, 2), 'utf-8');
+        }
+    }
+}
+export const itemMgr = new ItemMgr(baseItemMgr);
+
+class SpellMgr implements DataMgr<SpellFileEntry> {
+    raw: {
+        zh: SpellFileEntry[];
+        en: SpellFileEntry[];
+    } = {
+        zh: [],
+        en: [],
+    };
+    db: Map<string, WikiSpellData> = new Map();
+    constructor() {}
+    getId(spell: SpellFileEntry): string {
+        if (spell.ENG_name) {
+            return `${spell.ENG_name.trim()}|${spell.source}`;
+        }
+        return `${spell.name.trim()}|${spell.source}`;
+    }
+    loadData(zh: SpellFile | null, en: SpellFile | null) {
+        this.raw.zh.push(...(zh?.spell || []));
+        this.raw.en.push(...(en?.spell || []));
+
+        idMgr.compare(
+            'spell',
+            { zh: zh?.spell || [], en: en?.spell || [] },
+            {
+                getId: item => this.getId(item!),
+                getEnTitle: item => item.name,
+                getZhTitle: item => item.name,
+            }
+        );
+
+        for (const enSpell of this.raw.en) {
+            const id = this.getId(enSpell);
+            const zhSpell = this.raw.zh.find(s => this.getId(s) === id);
+
+            const spellData: WikiSpellData = {
+                dataType: 'spell',
+                uid: `spell_${id}`,
+                id: id,
+                displayName: {
+                    zh: zhSpell ? zhSpell.name : null,
+                    en: enSpell.name,
+                },
+                mainSource: {
+                    source: enSpell.source,
+                    page: enSpell.page || 0,
+                },
+                allSources: [
+                    {
+                        source: enSpell.source,
+                        page: enSpell.page || 0,
+                    },
+                ],
+                en: {
+                    name: enSpell.name,
+                    alias: enSpell.alias || [],
+                    components: enSpell.components,
+                    duration: enSpell.duration,
+                    range: enSpell.range,
+                    time: enSpell.time,
+                    entries: enSpell.entries,
+                    entriesHigherLevel: enSpell.entriesHigherLevel,
+                    scalingLevelDice: enSpell.scalingLevelDice,
+                },
+                zh: zhSpell
+                    ? {
+                          name: zhSpell.name,
+                          alias: zhSpell.alias || [],
+                          components: zhSpell.components,
+                          duration: zhSpell.duration,
+                          range: zhSpell.range,
+                          time: zhSpell.time,
+                          entries: zhSpell.entries,
+                          entriesHigherLevel: zhSpell.entriesHigherLevel,
+                          scalingLevelDice: zhSpell.scalingLevelDice,
+                      }
+                    : null,
+                level: enSpell.level,
+                school: enSpell.school,
+                spellAttack: enSpell.spellAttack || [],
+                abilityCheck: enSpell.abilityCheck || [],
+                damageInflict: enSpell.damageInflict || [],
+                damageVulnerable: enSpell.damageVulnerable || [],
+                conditionInflict: enSpell.conditionInflict || [],
+                damageResist: enSpell.damageResist || [],
+                damageImmune: enSpell.damageImmune || [],
+                conditionImmune: enSpell.conditionImmune || [],
+                savingThrow: enSpell.savingThrow || [],
+                affectsCreatureType: enSpell.affectsCreatureType || [],
+            };
+            this.db.set(id, spellData);
+        }
+    }
+    async generateFiles() {
+        const outputDir = './output/spell';
+        await fs.mkdir(outputDir, { recursive: true });
+
+        for (const [id, spellData] of this.db) {
+            const filePath = path.join(outputDir, `${escapeId(id)}.json`);
+            await fs.writeFile(filePath, JSON.stringify(spellData, null, 2), 'utf-8');
+        }
+    }
+}
+
+export const spellMgr = new SpellMgr();

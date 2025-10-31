@@ -1,0 +1,25 @@
+{
+  "name": "wiki-dnd-parser",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "getCnRepo": "node --import ./loader.js src/getGitRepo.ts",
+    "start": "node --import ./loader.js src/prepareData.ts"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^20.9.2",
+    "@types/xlsx": "^0.0.36",
+    "chalk": "^5.4.1",
+    "dotenv": "^16.4.7",
+    "form-data": "^4.0.3",
+    "huijiwiki-api": "^0.7.1",
+    "prettier": "^3.6.2",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.2.2",
+    "xlsx": "^0.18.5"
+  }
+}
