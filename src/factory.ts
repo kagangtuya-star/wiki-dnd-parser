@@ -97,7 +97,7 @@ type I18nJoinedEntry = {
 };
 
 class IdMgr {
-    dataset: any;
+    dataset: Record<string, any> = {};
 
     workBook: XSLX.WorkBook = XSLX.utils.book_new();
 
