@@ -2,8 +2,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 const config = {
-    DATA_EN_DIR: 'D:/git repo/5etools-src/data',
-    DATA_ZH_DIR: 'D:/git repo/5etools/data',
+    DATA_EN_DIR: './input/5e-en/data',
+    DATA_ZH_DIR: './input/5e-cn/data',
 };
 
 export const loadFile = async <T = any>(filePath: string): Promise<{ en: T; zh: T }> => {
