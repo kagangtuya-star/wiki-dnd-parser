@@ -23,7 +23,7 @@ import {
 import { parseContent } from './contentGen.js';
 import { mwUtil } from './config.js';
 import * as XSLX from 'xlsx';
-import { SpellFile, SpellFileEntry, WikiSpellData } from './types/spells';
+import { SpellClassEntry, SpellFile, SpellFileEntry, WikiSpellData } from './types/spells';
 
 export const createOutputFolders = async () => {
     // delete ./output folder and all files
@@ -955,7 +955,19 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
         en: [],
     };
     db: Map<string, WikiSpellData> = new Map();
+    spellSources: Record<string, Record<string, { class?: SpellClassEntry[] }>> = {};
     constructor() {}
+    async loadSources(filePath: string) {
+        try {
+            const data = await fs.readFile(filePath, 'utf-8');
+            this.spellSources = JSON.parse(data);
+        } catch {
+            this.spellSources = {};
+        }
+    }
+    getClasses(source: string, name: string): SpellClassEntry[] | undefined {
+        return this.spellSources[source]?.[name]?.class;
+    }
     getId(spell: SpellFileEntry): string {
         if (spell.ENG_name) {
             return `${spell.ENG_name.trim()}|${spell.source}`;
@@ -1035,6 +1047,7 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
                 savingThrow: enSpell.savingThrow || [],
                 affectsCreatureType: enSpell.affectsCreatureType || [],
                 ritual: enSpell.meta?.ritual || false,
+                classes: this.getClasses(enSpell.source, enSpell.name),
             };
             this.db.set(id, spellData);
         }

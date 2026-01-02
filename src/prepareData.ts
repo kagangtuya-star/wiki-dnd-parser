@@ -42,6 +42,7 @@ import { tagParser } from './contentGen.js';
     await itemMgr.generateFiles();
 
     // 法术
+    await spellMgr.loadSources('./input/5e-en/data/spells/sources.json');
     const { en: spellIndex } = (await loadFile('./spells/index.json')) as Record<string, string>;
     for (const [source, filePath] of Object.entries(spellIndex)) {
         const spellFilePath = './spells/' + filePath;

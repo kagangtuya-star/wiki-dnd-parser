@@ -97,6 +97,11 @@ export type WikiSpellEntry = {
     };
 };
 
+export type SpellClassEntry = {
+    name: string;
+    source: string;
+};
+
 export type WikiSpellData = WikiData<WikiSpellEntry, 'spell'> & {
     level: number;
     school: string;
@@ -111,4 +116,5 @@ export type WikiSpellData = WikiData<WikiSpellEntry, 'spell'> & {
     savingThrow?: string[];
     affectsCreatureType?: string[];
     ritual?: boolean;
+    classes?: SpellClassEntry[];
 };
