@@ -1,5 +1,98 @@
 import { getDefaultId } from './shared.js';
 
+const ENTRIES_WITH_ENUMERATED_TITLES = [
+    {type: "section", key: "entries", depth: -1},
+    {type: "entries", key: "entries", depthIncrement: 1},
+    {type: "options", key: "entries"},
+    {type: "inset", key: "entries", depth: 2},
+    {type: "insetReadaloud", key: "entries", depth: 2},
+    {type: "variant", key: "entries", depth: 2},
+    {type: "variantInner", key: "entries", depth: 2},
+    {type: "actions", key: "entries", depth: 2},
+    {type: "flowBlock", key: "entries", depth: 2},
+    {type: "optfeature", key: "entries", depthIncrement: 1},
+    {type: "patron", key: "entries"},
+];
+
+const ENTRIES_WITH_ENUMERATED_TITLES_LOOKUP = Object.fromEntries(
+    ENTRIES_WITH_ENUMERATED_TITLES.map(it => [it.type, it])
+);
+
+const processFluffEntriesWithTitleFork = (entries: any[], depth: number = -1): any[] => {
+    if (!Array.isArray(entries)) return entries;
+    
+    return entries.map((entry) => {
+        if (typeof entry !== 'object' || entry === null) {
+            return entry;
+        }
+        
+        const processedEntry = { ...entry };
+        const currentType = processedEntry.type;
+        
+        const entryConfig = ENTRIES_WITH_ENUMERATED_TITLES_LOOKUP[currentType];
+        
+        let shouldConvert = false;
+        let titleDepth = depth;
+        
+        if (currentType === 'entries') {
+            if (depth < 2 && (processedEntry.name != null || processedEntry.title != null)) {
+                shouldConvert = true;
+                titleDepth = depth;
+            }
+        } else if (entryConfig) {
+            if (entryConfig?.depth !== undefined) {
+                titleDepth = entryConfig.depth;
+            } else if (entryConfig?.depthIncrement) {
+                titleDepth = depth + 1;
+            } else if (currentType === 'section') {
+                titleDepth = -1;
+            }
+            titleDepth = Math.min(Math.max(titleDepth, -1), 2);
+            
+            if (titleDepth < 2 && processedEntry.name != null) {
+                shouldConvert = true;
+            }
+        } else {
+            if (depth < 2 && processedEntry.name != null) {
+                shouldConvert = true;
+                titleDepth = depth;
+            }
+        }
+        
+        if (shouldConvert) {
+            processedEntry.title_fork = titleDepth + 2;
+            if ('ENG_name' in processedEntry) {
+                processedEntry.ENG_title = processedEntry.ENG_name;
+                delete processedEntry.ENG_name;
+            }
+            if ('name' in processedEntry) {
+                processedEntry.title = processedEntry.name;
+                delete processedEntry.name;
+            }
+        }
+        
+        if (Array.isArray(processedEntry.entries)) {
+            let nextDepth = depth;
+            
+            if (currentType === 'section') {
+                nextDepth = -1;
+            } else if (entryConfig?.depth !== undefined) {
+                nextDepth = entryConfig.depth;
+            } else if (entryConfig?.depthIncrement) {
+                nextDepth = depth + 1;
+            } else if (currentType === 'entries') {
+                nextDepth = depth + 1;
+            }
+            
+            nextDepth = Math.min(Math.max(nextDepth, -1), 2);
+            
+            processedEntry.entries = processFluffEntriesWithTitleFork(processedEntry.entries, nextDepth);
+        }
+        
+        return processedEntry;
+    });
+};
+
 const toArrayItems = (value: unknown): any[] => {
     if (value === undefined) return [];
     return Array.isArray(value) ? [...value] : [value];
@@ -53,6 +146,10 @@ export const resolveFluffContent = (
 
     entries = applyArrayCopyMod(entries, copy?._mod?.entries);
     images = applyArrayCopyMod(images, copy?._mod?.images);
+
+    if (entries) {
+        entries = processFluffEntriesWithTitleFork(entries);
+    }
 
     if (!entries && !images) return undefined;
     return { entries, images };

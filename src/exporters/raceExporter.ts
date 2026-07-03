@@ -449,7 +449,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             subraceEnMap,
             subraceReprintMap,
             subraceFluffStore.getFull(id),
-            'subrace'
+            'race'
         );
 
         subraceOutput.push({
@@ -522,31 +522,25 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         races: item.races || [],
     }));
 
-    const raceOutputNamelist = {
-        type: 'race',
-        data: raceNamelistData,
-    };
-
-    const raceOutputPath = path.join(namelistDir, 'racenamelist.json');
-    await fs.writeFile(raceOutputPath, JSON.stringify(raceOutputNamelist, null, 2), 'utf-8');
-    console.log(`已生成 racenamelist.json 文件：${raceOutputPath}`);
-
     const subraceNamelistData = subraceOutput.map(item => ({
         id: item.id || '',
         src: item.mainSource?.source || '',
         name_en: item.displayName?.en || '',
         name_zh: item.displayName?.zh || item.displayName?.en || '',
         superior: item.superiorfork?.superior || '',
+        races: [],
     }));
 
-    const subraceOutputNamelist = {
-        type: 'subrace',
-        data: subraceNamelistData,
+    const combinedNamelistData = [...raceNamelistData, ...subraceNamelistData];
+
+    const raceOutputNamelist = {
+        type: 'race',
+        data: combinedNamelistData,
     };
 
-    const subraceOutputPath = path.join(namelistDir, 'subracenamelist.json');
-    await fs.writeFile(subraceOutputPath, JSON.stringify(subraceOutputNamelist, null, 2), 'utf-8');
-    console.log(`已生成 subracenamelist.json 文件：${subraceOutputPath}`);
+    const raceOutputPath = path.join(namelistDir, 'racenamelist.json');
+    await fs.writeFile(raceOutputPath, JSON.stringify(raceOutputNamelist, null, 2), 'utf-8');
+    console.log(`已生成 racenamelist.json 文件：${raceOutputPath}`);
 
     return {
         count: raceOutput.length + subraceOutput.length,

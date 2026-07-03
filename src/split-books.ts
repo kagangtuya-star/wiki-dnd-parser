@@ -76,20 +76,15 @@ const processEntriesWithTitleFork = (entries: any[], depth: number = -1, parentT
         
         const entryConfig = ENTRIES_WITH_ENUMERATED_TITLES_LOOKUP[currentType];
         
+        let shouldConvert = false;
+        let titleDepth = depth;
+        
         if (currentType === 'entries') {
             if (depth < 2 && (processedEntry.name != null || processedEntry.title != null)) {
-                processedEntry.title_fork = depth + 2;
-                if ('ENG_name' in processedEntry) {
-                    processedEntry.ENG_title = processedEntry.ENG_name;
-                    delete processedEntry.ENG_name;
-                }
-                if ('name' in processedEntry) {
-                    processedEntry.title = processedEntry.name;
-                    delete processedEntry.name;
-                }
+                shouldConvert = true;
+                titleDepth = depth;
             }
         } else if (entryConfig) {
-            let titleDepth = depth;
             if (entryConfig?.depth !== undefined) {
                 titleDepth = entryConfig.depth;
             } else if (entryConfig?.depthIncrement) {
@@ -100,15 +95,24 @@ const processEntriesWithTitleFork = (entries: any[], depth: number = -1, parentT
             titleDepth = Math.min(Math.max(titleDepth, -1), 2);
             
             if (titleDepth < 2 && processedEntry.name != null) {
-                if ('ENG_name' in processedEntry) {
-                    processedEntry.ENG_title = processedEntry.ENG_name;
-                    delete processedEntry.ENG_name;
-                }
-                if ('name' in processedEntry) {
-                    processedEntry.title = processedEntry.name;
-                    delete processedEntry.name;
-                }
-                processedEntry.title_fork = titleDepth + 2;
+                shouldConvert = true;
+            }
+        } else {
+            if (depth < 2 && processedEntry.name != null) {
+                shouldConvert = true;
+                titleDepth = depth;
+            }
+        }
+        
+        if (shouldConvert) {
+            processedEntry.title_fork = titleDepth + 2;
+            if ('ENG_name' in processedEntry) {
+                processedEntry.ENG_title = processedEntry.ENG_name;
+                delete processedEntry.ENG_name;
+            }
+            if ('name' in processedEntry) {
+                processedEntry.title = processedEntry.name;
+                delete processedEntry.name;
             }
         }
         
@@ -650,6 +654,13 @@ const writeSectionFile = async (
 
     const enContent = { entries: enEntries };
     const zhContent = { entries: zhEntries };
+
+    if (zhContent) {
+        zhContent.entries = processEntriesWithTitleFork(zhContent.entries);
+    }
+    if (enContent) {
+        enContent.entries = processEntriesWithTitleFork(enContent.entries);
+    }
 
     const processedZhContent = processBookTags(zhContent);
     const processedEnContent = processBookTags(enContent);
