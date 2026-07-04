@@ -201,9 +201,10 @@ const buildEntityBase = (
     entryMap: Map<string, Record<string, any>>,
     reprintMap: Map<string, string[]>,
     full: { en?: any; zh?: any } | undefined,
-    dataType: string
+    dataType: string,
+    originalId?: string
 ) => {
-    const id = getDefaultId(enItem);
+    const id = originalId || getDefaultId(enItem);
     const split = splitStructuredRecordByDiff(enItem, zhItem, {
         emptyZhValue: '',
     });
@@ -294,7 +295,8 @@ const expandVersions = (item: Record<string, any>): Record<string, any>[] => {
         if (version._abstract) {
             const abstractMod = version._abstract._mod;
             if (abstractMod && version._implementations) {
-                for (const impl of version._implementations) {
+                for (let implIdx = 0; implIdx < version._implementations.length; implIdx++) {
+                    const impl = version._implementations[implIdx];
                     const implItem = { ...versionItem };
 
                     if (abstractMod.entries && Array.isArray(abstractMod.entries)) {
@@ -347,6 +349,10 @@ const expandVersions = (item: Record<string, any>): Record<string, any>[] => {
                         implItem.name = name;
                     }
 
+                    implItem._versionImplIdx = implIdx;
+                    implItem._originalName = versionItem.name || '';
+                    implItem._isModExpansion = true;
+
                     results.push(implItem);
                 }
             }
@@ -362,6 +368,7 @@ export interface RaceExporterResult {
     count: number;
     raceCount: number;
     subraceCount: number;
+    subraceModCount: number;
 }
 
 export const runRaceExporter = async (): Promise<RaceExporterResult> => {
@@ -391,7 +398,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             
             const expanded = expandVersions(resolved);
             for (const item of expanded) {
-                const id = getDefaultId(item);
+                const baseId = getDefaultId(item);
+                const id = item._isModExpansion ? `${baseId}#${item._versionImplIdx}` : baseId;
                 const previous = byId.get(id);
                 if (!previous) {
                     byId.set(id, item);
@@ -421,7 +429,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             
             const expanded = expandVersions(resolved);
             for (const item of expanded) {
-                const id = getDefaultId(item);
+                const baseId = getDefaultId(item);
+                const id = item._isModExpansion ? `${baseId}#${item._versionImplIdx}` : baseId;
                 const previous = byId.get(id);
                 if (!previous) {
                     byId.set(id, item);
@@ -446,6 +455,27 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const zhRace = raceZhMap.get(getDefaultId(enRace)) as Record<string, any> | undefined;
         if (zhRace && typeof zhRace.name === 'string') {
             classNameMap.set(zhRace.name, enRace.name);
+        }
+    }
+
+    // 对 mod 展开条目，用 EN 展开后的英文名更新 CN 条目的 ENG_name
+    // 匹配键：source + 原始基础名 + implIdx
+    const enModMap = new Map<string, Record<string, any>>();
+    const zhModMap = new Map<string, Record<string, any>>();
+    for (const enEntry of subraceEnEntries) {
+        if (enEntry._isModExpansion) {
+            const key = `${enEntry.source}|${enEntry._originalName || ''}|${enEntry._versionImplIdx}`;
+            enModMap.set(key, enEntry);
+        }
+    }
+    for (const zhEntry of subraceZhEntries) {
+        if (zhEntry._isModExpansion) {
+            const key = `${zhEntry.source}|${zhEntry.ENG_name || ''}|${zhEntry._versionImplIdx}`;
+            zhModMap.set(key, zhEntry);
+            const enEntry = enModMap.get(key);
+            if (enEntry) {
+                zhEntry.ENG_name = enEntry.name;
+            }
         }
     }
 
@@ -539,7 +569,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             raceEnMap,
             raceReprintMap,
             raceFluffStore.getFull(id),
-            'race'
+            'race',
+            id
         );
 
         raceOutput.push({
@@ -550,9 +581,16 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
     }
 
     const subraceOutput: Record<string, any>[] = [];
+    const subraceModOutput: Record<string, any>[] = [];
     for (const enSubrace of subraceEnEntries) {
-        const id = getDefaultId(enSubrace);
-        const zhSubrace = subraceZhMap.get(id);
+        const baseId = getDefaultId(enSubrace);
+        let zhSubrace;
+        if (enSubrace._isModExpansion) {
+            const modKey = `${enSubrace.source}|${enSubrace._originalName || ''}|${enSubrace._versionImplIdx}`;
+            zhSubrace = zhModMap.get(modKey);
+        } else {
+            zhSubrace = subraceZhMap.get(baseId);
+        }
 
         const superiorRaceName = classNameMap.get(enSubrace.raceName) || enSubrace.raceName;
         const superiorId = `${superiorRaceName}|${enSubrace.raceSource || enSubrace.source}`;
@@ -560,27 +598,36 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const replacedEnSubrace = replaceSubraceNames({ ...enSubrace }, enSubrace.source);
         const replacedZhSubrace = zhSubrace ? replaceSubraceNames({ ...zhSubrace }, zhSubrace.source || enSubrace.source) : undefined;
 
+        const isMod = enSubrace._isModExpansion;
+        const dataType = isMod ? 'racemod' : 'race';
 
         const entityBase = buildEntityBase(
             replacedEnSubrace,
             replacedZhSubrace,
             subraceEnMap,
             subraceReprintMap,
-            subraceFluffStore.getFull(id),
-            'race'
+            subraceFluffStore.getFull(baseId),
+            dataType,
+            baseId
         );
 
         const replacedDisplayName = getReplacedDisplayName(enSubrace, zhSubrace, subraceReplacementMap);
 
-        subraceOutput.push({
+        const item = {
             ...entityBase,
             displayName: replacedDisplayName,
             superiorfork: buildSuperiorfork({
                 superior: superiorId,
                 fork: 1,
             }),
-            foundry: raceFoundryStore.getFull(id),
-        });
+            foundry: raceFoundryStore.getFull(baseId),
+        };
+
+        if (isMod) {
+            subraceModOutput.push(item);
+        } else {
+            subraceOutput.push(item);
+        }
     }
 
     const raceOutputDir = path.join('./output', 'race');
@@ -593,7 +640,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const sourceDir = path.join(raceOutputDir, raceName, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 
-        const baseName = escapeFileName(mwUtil.getMwTitle(item.displayName.en || item.displayName.zh || item.id));
+        const idName = item.id.split('|')[0];
+        const baseName = escapeFileName(mwUtil.getMwTitle(idName));
         const preferredFileName = `${baseName}.json`;
 
         const key = `${raceName}|${sourceId}`;
@@ -617,9 +665,29 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const sourceDir = path.join(subraceOutputDir, raceName, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 
+        const idName = item.id.split('|')[0];
+        const baseName = escapeFileName(mwUtil.getMwTitle(idName));
+        const preferredFileName = `${baseName}.json`;
 
+        const key = `${raceName}|${sourceId}`;
+        if (!subraceWrittenFileNames.has(key)) {
+            subraceWrittenFileNames.set(key, new Set<string>());
+        }
+        const usedNames = subraceWrittenFileNames.get(key)!;
 
-        const baseName = escapeFileName(mwUtil.getMwTitle(item.displayName.en || item.displayName.zh || item.id));
+        const fileName = resolveCaseInsensitiveOutputFileName(usedNames, preferredFileName, item.id);
+        const filePath = path.join(sourceDir, fileName);
+        await fs.writeFile(filePath, JSON.stringify(item, null, 2), 'utf-8');
+    }
+
+    for (const item of subraceModOutput) {
+        const raceName = item.superiorfork?.superior?.split('|')[0]?.toLowerCase() || 'other';
+        const sourceId = item.mainSource.source;
+        const sourceDir = path.join(subraceOutputDir, raceName, sourceId);
+        await fs.mkdir(sourceDir, { recursive: true });
+
+        const idName = item.id.split('|')[0];
+        const baseName = escapeFileName(mwUtil.getMwTitle(idName));
         const preferredFileName = `${baseName}.json`;
 
         const key = `${raceName}|${sourceId}`;
@@ -640,7 +708,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         id: item.id || '',
         src: item.mainSource?.source || '',
         name_en: item.displayName?.en || '',
-        name_zh: item.displayName?.zh || item.displayName?.en || '',
+        name_zh: item.displayName?.zh || '',
         superior: item.superiorfork?.superior || '',
         races: item.races || [],
     }));
@@ -649,7 +717,16 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         id: item.id || '',
         src: item.mainSource?.source || '',
         name_en: item.displayName?.en || '',
-        name_zh: item.displayName?.zh || item.displayName?.en || '',
+        name_zh: item.displayName?.zh || '',
+        superior: item.superiorfork?.superior || '',
+        races: [],
+    }));
+
+    const subraceModNamelistData = subraceModOutput.map(item => ({
+        id: item.id || '',
+        src: item.mainSource?.source || '',
+        name_en: item.displayName?.en || '',
+        name_zh: item.displayName?.zh || '',
         superior: item.superiorfork?.superior || '',
         races: [],
     }));
@@ -659,6 +736,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
     const raceOutputNamelist = {
         type: 'race',
         data: combinedNamelistData,
+        mod: subraceModNamelistData,
     };
 
     const raceOutputPath = path.join(namelistDir, 'racenamelist.json');
@@ -666,8 +744,9 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
     console.log(`已生成 racenamelist.json 文件：${raceOutputPath}`);
 
     return {
-        count: raceOutput.length + subraceOutput.length,
+        count: raceOutput.length + subraceOutput.length + subraceModOutput.length,
         raceCount: raceOutput.length,
         subraceCount: subraceOutput.length,
+        subraceModCount: subraceModOutput.length,
     };
 };
