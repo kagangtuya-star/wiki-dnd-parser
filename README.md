@@ -7,6 +7,7 @@
 - 辅助脚本：`src/getGitRepo.ts`（`npm run getCnRepo`，按需拉取源数据）。\
   `src/wikiPageGenerator.ts`（`npm run page`，根据 `./output` 目录下输出的 JSON 文件，生成对应的 wiki 内容页面）
   `src/list-files.ts`（`npm run listFiles`，输出output跟page文件对应页面名的收集表格）
+  `src/generateRaceTable.ts`（`npm run racetable`，补全`子种族名字替换词典.xlsx`缺失数据）
 
 运行逻辑概览
 
@@ -100,6 +101,7 @@ Wiki 文件名格式：**中文名.wiki**（按来源分文件夹存放）
 2. 获取数据（二选一）：
    - 准备本地 data 目录并配置路径。
    - 或运行 `npm run getCnRepo` 拉取仓库数据。
+   - 运行 `npm run racetable` 补全`子种族名字替换词典.xlsx`缺失数据，然后手动补充替换项。
 3. 修改 `src/config.ts` 的 `DATA_EN_DIR` / `DATA_ZH_DIR`。
 4. 运行 `npm run start` 生成 `./output`。
 5. 查看 `output/logs.json` 与 `output/idMgr.xlsx` 定位缺失翻译或 ID 不匹配。

@@ -12,7 +12,8 @@
     "generateContents": "node --import ./loader.js src/generate-contents.ts",
     "splitBooks": "node --import ./loader.js src/split-books.ts",
     "listFiles": "node --import ./loader.js src/list-files.ts",
-    "generateBookPages": "node --import ./loader.js src/generateBookPages.ts"
+    "generateBookPages": "node --import ./loader.js src/generateBookPages.ts",
+    "racetable": "node --import ./loader.js src/generateRaceTable.ts"
   },
   "author": "",
   "license": "ISC",

@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import XLSX from 'xlsx';
 import config, { mwUtil } from '../config.js';
 import { parseContent, tagParser } from '../contentGen.js';
 import { buildFluffStore } from './fluff.js';
@@ -17,6 +18,44 @@ import {
     resolveCaseInsensitiveOutputFileName,
     splitStructuredRecordByDiff,
 } from './shared.js';
+
+interface SubraceReplacement {
+    subraceName: string;
+    subraceENGName: string;
+    subraceSource: string;
+    fullName: string;
+    fullENGName: string;
+}
+
+const loadSubraceReplacementDictionary = (): Map<string, SubraceReplacement> => {
+    const dictionaryPath = path.join(process.cwd(), 'config/子种族名字替换词典.xlsx');
+    const workbook = XLSX.readFile(dictionaryPath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+    
+    const replacementMap = new Map<string, SubraceReplacement>();
+    
+    for (const row of data as any[]) {
+        const subraceENGName = row['缀名原名'] || row['原名全文'];
+        const subraceSource = row['子种族来源'];
+        const fullName = row['子种族全名'];
+        const fullENGName = row['原名全文'];
+        
+        if (subraceENGName && subraceSource && fullName && fullENGName) {
+            const key = `${subraceENGName}|${subraceSource}`;
+            replacementMap.set(key, {
+                subraceName: row['子种族缀名'] || '',
+                subraceENGName,
+                subraceSource,
+                fullName,
+                fullENGName,
+            });
+        }
+    }
+    
+    return replacementMap;
+};
 
 const readJson = async <T>(filePath: string): Promise<T> => {
     const content = await fs.readFile(filePath, 'utf-8');
@@ -130,6 +169,31 @@ const getDisplayName = (
             : null,
     en: enItem.name,
 });
+
+const getReplacedDisplayName = (
+    enItem: Record<string, any>,
+    zhItem: Record<string, any> | undefined,
+    replacementMap: Map<string, SubraceReplacement>
+) => {
+    const source = enItem.source;
+    let enName = enItem.name;
+    let zhName = zhItem?.name;
+    
+    const key = `${enItem.name}|${source}`;
+    const replacement = replacementMap.get(key);
+    
+    if (replacement) {
+        enName = replacement.fullENGName;
+        if (zhName) {
+            zhName = replacement.fullName;
+        }
+    }
+    
+    return {
+        zh: zhName && zhName.trim() !== enName.trim() ? zhName : null,
+        en: enName,
+    };
+};
 
 const buildEntityBase = (
     enItem: Record<string, any>,
@@ -385,6 +449,56 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         }
     }
 
+    const subraceReplacementMap = loadSubraceReplacementDictionary();
+
+    const replaceSubraceNames = (entry: Record<string, any>, source: string): Record<string, any> => {
+        if (!entry || typeof entry !== 'object') return entry;
+        
+        let key = `${entry.name}|${source}`;
+        let replacement = subraceReplacementMap.get(key);
+        
+        if (!replacement && entry.ENG_name) {
+            key = `${entry.ENG_name}|${source}`;
+            replacement = subraceReplacementMap.get(key);
+        }
+        
+        if (replacement) {
+            entry = { ...entry };
+            if ('ENG_name' in entry) {
+                entry.name = replacement.fullName;
+                entry.ENG_name = replacement.fullENGName;
+            } else {
+                entry.name = replacement.fullENGName;
+            }
+        }
+        
+        if (Array.isArray(entry.entries)) {
+            entry = { ...entry };
+            entry.entries = entry.entries.map((e: any) => replaceSubraceNames(e, source));
+        }
+        
+        if (typeof entry.text === 'string') {
+            entry = { ...entry };
+            entry.text = replaceRaceLinks(entry.text, subraceReplacementMap);
+        }
+        
+        return entry;
+    };
+
+    const replaceRaceLinks = (text: string, replacementMap: Map<string, SubraceReplacement>): string => {
+        return text.replace(/\{@race\s+([^}\s]+)/g, (match, raceName) => {
+            const parts = raceName.split('|');
+            if (parts.length === 2) {
+                const key = raceName;
+                const replacement = replacementMap.get(key);
+                if (replacement) {
+                    return `{@race ${replacement.fullENGName}`;
+                }
+            }
+            return match;
+        });
+    };
+
     const raceOutput: Record<string, any>[] = [];
     for (const enRace of raceData.en.race) {
         const id = getDefaultId(enRace);
@@ -443,17 +557,24 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const superiorRaceName = classNameMap.get(enSubrace.raceName) || enSubrace.raceName;
         const superiorId = `${superiorRaceName}|${enSubrace.raceSource || enSubrace.source}`;
 
+        const replacedEnSubrace = replaceSubraceNames({ ...enSubrace }, enSubrace.source);
+        const replacedZhSubrace = zhSubrace ? replaceSubraceNames({ ...zhSubrace }, zhSubrace.source || enSubrace.source) : undefined;
+
+
         const entityBase = buildEntityBase(
-            enSubrace,
-            zhSubrace,
+            replacedEnSubrace,
+            replacedZhSubrace,
             subraceEnMap,
             subraceReprintMap,
             subraceFluffStore.getFull(id),
             'race'
         );
 
+        const replacedDisplayName = getReplacedDisplayName(enSubrace, zhSubrace, subraceReplacementMap);
+
         subraceOutput.push({
             ...entityBase,
+            displayName: replacedDisplayName,
             superiorfork: buildSuperiorfork({
                 superior: superiorId,
                 fork: 1,
@@ -495,6 +616,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const sourceId = item.mainSource.source;
         const sourceDir = path.join(subraceOutputDir, raceName, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
+
+
 
         const baseName = escapeFileName(mwUtil.getMwTitle(item.displayName.en || item.displayName.zh || item.id));
         const preferredFileName = `${baseName}.json`;
