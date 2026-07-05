@@ -25,6 +25,7 @@ interface SubraceReplacement {
     subraceSource: string;
     fullName: string;
     fullENGName: string;
+    isStandalonePage: boolean;
 }
 
 const loadSubraceReplacementDictionary = (): Map<string, SubraceReplacement> => {
@@ -50,6 +51,7 @@ const loadSubraceReplacementDictionary = (): Map<string, SubraceReplacement> => 
                 subraceSource,
                 fullName,
                 fullENGName,
+                isStandalonePage: row['是否作为单独页面存在'] !== false && row['是否作为单独页面存在'] !== 'false',
             });
         }
     }
@@ -90,6 +92,7 @@ const replaceSubraceNames = (entry: Record<string, any>, source: string, replace
         } else {
             entry.name = replacement.fullENGName;
         }
+        entry._isStandalonePage = replacement.isStandalonePage;
     }
     
     if (Array.isArray(entry.entries)) {
@@ -546,7 +549,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const subracesForRace = subraceEnEntries
             .filter(item => {
                 const raceNameEn = classNameMap.get(item.raceName) || item.raceName;
-                return `${raceNameEn}|${item.raceSource}` === raceId;
+                return `${raceNameEn}|${item.raceSource}` === raceId && !item._isModExpansion && item._isStandalonePage !== false;
             });
 
         const subraceMap = new Map<string, any[]>();
@@ -597,7 +600,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const superiorRaceName = classNameMap.get(enSubrace.raceName) || enSubrace.raceName;
         const superiorId = `${superiorRaceName}|${enSubrace.raceSource || enSubrace.source}`;
 
-        const isMod = enSubrace._isModExpansion;
+        const isMod = enSubrace._isModExpansion || enSubrace._isStandalonePage === false;
         const dataType = isMod ? 'racemod' : 'race';
 
         const entityBase = buildEntityBase(
