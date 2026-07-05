@@ -576,7 +576,7 @@ export const createOutputFolders = async (generatePages: boolean) => {
         try {
             await fs.access('./output');
             // 只删除需要重新生成的文件夹，保留 contents、book、adventure
-            const dirsToClear = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist'];
+            const dirsToClear = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'race'];
             for (const dir of dirsToClear) {
                 const dirPath = path.join('./output', dir);
                 try {
@@ -589,7 +589,7 @@ export const createOutputFolders = async (generatePages: boolean) => {
         } catch (error) {
             // output 目录不存在，跳过
         }
-        const dirs = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'contents', 'book', 'adventure', 'class'];
+        const dirs = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'contents', 'book', 'adventure', 'class', 'race'];
         for (const dir of dirs) {
             const dirPath = path.join('./output', dir);
             try {

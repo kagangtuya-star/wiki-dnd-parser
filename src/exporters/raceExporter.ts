@@ -57,6 +57,54 @@ const loadSubraceReplacementDictionary = (): Map<string, SubraceReplacement> => 
     return replacementMap;
 };
 
+const replaceRaceLinks = (text: string, replacementMap: Map<string, SubraceReplacement>): string => {
+    return text.replace(/\{@race\s+([^}\s]+)/g, (match, raceName) => {
+        const parts = raceName.split('|');
+        if (parts.length === 2) {
+            const key = raceName;
+            const replacement = replacementMap.get(key);
+            if (replacement) {
+                return `{@race ${replacement.fullENGName}`;
+            }
+        }
+        return match;
+    });
+};
+
+const replaceSubraceNames = (entry: Record<string, any>, source: string, replacementMap: Map<string, SubraceReplacement>): Record<string, any> => {
+    if (!entry || typeof entry !== 'object') return entry;
+    
+    let key = `${entry.name}|${source}`;
+    let replacement = replacementMap.get(key);
+    
+    if (!replacement && entry.ENG_name) {
+        key = `${entry.ENG_name}|${source}`;
+        replacement = replacementMap.get(key);
+    }
+    
+    if (replacement) {
+        entry = { ...entry };
+        if ('ENG_name' in entry) {
+            entry.name = replacement.fullName;
+            entry.ENG_name = replacement.fullENGName;
+        } else {
+            entry.name = replacement.fullENGName;
+        }
+    }
+    
+    if (Array.isArray(entry.entries)) {
+        entry = { ...entry };
+        entry.entries = entry.entries.map((e: any) => replaceSubraceNames(e, source, replacementMap));
+    }
+    
+    if (typeof entry.text === 'string') {
+        entry = { ...entry };
+        entry.text = replaceRaceLinks(entry.text, replacementMap);
+    }
+    
+    return entry;
+};
+
 const readJson = async <T>(filePath: string): Promise<T> => {
     const content = await fs.readFile(filePath, 'utf-8');
     return JSON.parse(content) as T;
@@ -386,6 +434,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
     const raceZhMap = new Map<string, Record<string, any>>(raceData.zh.race.map((item: Record<string, any>) => [getDefaultId(item), item]));
     const raceReprintMap = buildReprintMap(raceData.en.race, getDefaultId);
 
+    const subraceReplacementMap = loadSubraceReplacementDictionary();
+
     const { entries: subraceEnEntries, map: subraceEnMap } = (() => {
         const sourceMap = new Map<string, Record<string, any>>();
         for (const entry of raceData.en.subrace) {
@@ -398,15 +448,16 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             
             const expanded = expandVersions(resolved);
             for (const item of expanded) {
-                const baseId = getDefaultId(item);
+                const replacedItem = replaceSubraceNames({ ...item }, item.source, subraceReplacementMap);
+                const baseId = getDefaultId(replacedItem);
                 const id = item._isModExpansion ? `${baseId}#${item._versionImplIdx}` : baseId;
                 const previous = byId.get(id);
                 if (!previous) {
-                    byId.set(id, item);
+                    byId.set(id, replacedItem);
                     continue;
                 }
                 if (previous._copy && !item._copy) {
-                    byId.set(id, item);
+                    byId.set(id, replacedItem);
                 }
             }
         }
@@ -429,15 +480,16 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             
             const expanded = expandVersions(resolved);
             for (const item of expanded) {
-                const baseId = getDefaultId(item);
+                const replacedItem = replaceSubraceNames({ ...item }, item.source, subraceReplacementMap);
+                const baseId = getDefaultId(replacedItem);
                 const id = item._isModExpansion ? `${baseId}#${item._versionImplIdx}` : baseId;
                 const previous = byId.get(id);
                 if (!previous) {
-                    byId.set(id, item);
+                    byId.set(id, replacedItem);
                     continue;
                 }
                 if (previous._copy && !item._copy) {
-                    byId.set(id, item);
+                    byId.set(id, replacedItem);
                 }
             }
         }
@@ -478,56 +530,6 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             }
         }
     }
-
-    const subraceReplacementMap = loadSubraceReplacementDictionary();
-
-    const replaceSubraceNames = (entry: Record<string, any>, source: string): Record<string, any> => {
-        if (!entry || typeof entry !== 'object') return entry;
-        
-        let key = `${entry.name}|${source}`;
-        let replacement = subraceReplacementMap.get(key);
-        
-        if (!replacement && entry.ENG_name) {
-            key = `${entry.ENG_name}|${source}`;
-            replacement = subraceReplacementMap.get(key);
-        }
-        
-        if (replacement) {
-            entry = { ...entry };
-            if ('ENG_name' in entry) {
-                entry.name = replacement.fullName;
-                entry.ENG_name = replacement.fullENGName;
-            } else {
-                entry.name = replacement.fullENGName;
-            }
-        }
-        
-        if (Array.isArray(entry.entries)) {
-            entry = { ...entry };
-            entry.entries = entry.entries.map((e: any) => replaceSubraceNames(e, source));
-        }
-        
-        if (typeof entry.text === 'string') {
-            entry = { ...entry };
-            entry.text = replaceRaceLinks(entry.text, subraceReplacementMap);
-        }
-        
-        return entry;
-    };
-
-    const replaceRaceLinks = (text: string, replacementMap: Map<string, SubraceReplacement>): string => {
-        return text.replace(/\{@race\s+([^}\s]+)/g, (match, raceName) => {
-            const parts = raceName.split('|');
-            if (parts.length === 2) {
-                const key = raceName;
-                const replacement = replacementMap.get(key);
-                if (replacement) {
-                    return `{@race ${replacement.fullENGName}`;
-                }
-            }
-            return match;
-        });
-    };
 
     const raceOutput: Record<string, any>[] = [];
     for (const enRace of raceData.en.race) {
@@ -595,15 +597,12 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         const superiorRaceName = classNameMap.get(enSubrace.raceName) || enSubrace.raceName;
         const superiorId = `${superiorRaceName}|${enSubrace.raceSource || enSubrace.source}`;
 
-        const replacedEnSubrace = replaceSubraceNames({ ...enSubrace }, enSubrace.source);
-        const replacedZhSubrace = zhSubrace ? replaceSubraceNames({ ...zhSubrace }, zhSubrace.source || enSubrace.source) : undefined;
-
         const isMod = enSubrace._isModExpansion;
         const dataType = isMod ? 'racemod' : 'race';
 
         const entityBase = buildEntityBase(
-            replacedEnSubrace,
-            replacedZhSubrace,
+            enSubrace,
+            zhSubrace,
             subraceEnMap,
             subraceReprintMap,
             subraceFluffStore.getFull(baseId),
@@ -611,11 +610,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             baseId
         );
 
-        const replacedDisplayName = getReplacedDisplayName(enSubrace, zhSubrace, subraceReplacementMap);
-
         const item = {
             ...entityBase,
-            displayName: replacedDisplayName,
             superiorfork: buildSuperiorfork({
                 superior: superiorId,
                 fork: 1,
