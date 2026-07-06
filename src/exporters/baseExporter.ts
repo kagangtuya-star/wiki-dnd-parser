@@ -136,6 +136,7 @@ const defaultBuildEntity = (
         dataType,
         uid: `${dataType}_${id}`,
         id,
+        basicRules2024: !!(enItem.basicRules2024 || enItem.edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
         ...common,
         source: enItem.source,
         page: enItem.page || 0,

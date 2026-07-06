@@ -289,6 +289,7 @@ const buildEntityBase = (
         dataType,
         uid: `${dataType}_${id}`,
         id,
+        basicRules2024: !!(enItem.basicRules2024 || enItem.edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
         ...common,
         translator,
         displayName: getDisplayName(enItem, zhItem),

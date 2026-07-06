@@ -1134,6 +1134,7 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
                 dataType: 'item',
                 uid: `item_${id}`,
                 id: id,
+                basicRules2024: !!((enItem as any).basicRules2024 || (enItem as any).edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
                 ...common,
                 translator,
                 isBaseItem: true,
@@ -1678,6 +1679,7 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
                 dataType: 'item',
                 uid: `item_${id}`,
                 id: id,
+                basicRules2024: !!((enItem as any).basicRules2024 || (enItem as any).edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
                 ...common,
                 translator,
                 rarity: enItem.inherits?.rarity || enItem.rarity,
@@ -1920,6 +1922,7 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
                 dataType: 'spell',
                 uid: `spell_${id}`,
                 id: id,
+                basicRules2024: !!((enSpell as any).basicRules2024 || (enSpell as any).edition === 'one' || (typeof enSpell.source === 'string' && enSpell.source.startsWith('X'))),
                 ...common,
                 translator,
                 displayName: {

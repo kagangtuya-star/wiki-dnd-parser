@@ -193,6 +193,7 @@ const buildEntityBase = (
         dataType: 'class',
         uid: `class_${id}`,
         id,
+        basicRules2024: !!(enItem.basicRules2024 || enItem.edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
         ...common,
         translator,
         displayName: getDisplayName(enItem, zhItem),
@@ -265,14 +266,23 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
         const byId = new Map<string, Record<string, any>>();
         for (const entry of classData.en.subclass) {
             const resolved = resolveSubclassCopy(entry, sourceMap);
-            const id = `${resolved.ENG_name || resolved.name}|${resolved.source}|${resolved.classSource || ''}`;
+            const id = getDefaultId(resolved);
             const previous = byId.get(id);
             if (!previous) {
                 byId.set(id, resolved);
                 continue;
             }
-            if (previous._copy && !entry._copy) {
+            // 优先保留非 _copy 的版本；若两者都无 _copy，优先保留 classSource 与 source 一致的原版
+            const prevIsCopy = !!previous._copy;
+            const currIsCopy = !!entry._copy;
+            if (prevIsCopy && !currIsCopy) {
                 byId.set(id, resolved);
+            } else if (prevIsCopy === currIsCopy) {
+                const prevMatch = previous.classSource === previous.source;
+                const currMatch = resolved.classSource === resolved.source;
+                if (currMatch && !prevMatch) {
+                    byId.set(id, resolved);
+                }
             }
         }
 
@@ -297,8 +307,17 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
                 byId.set(id, resolved);
                 continue;
             }
-            if (previous._copy && !entry._copy) {
+            // 优先保留非 _copy 的版本；若两者都无 _copy，优先保留 classSource 与 source 一致的原版
+            const prevIsCopy = !!previous._copy;
+            const currIsCopy = !!entry._copy;
+            if (prevIsCopy && !currIsCopy) {
                 byId.set(id, resolved);
+            } else if (prevIsCopy === currIsCopy) {
+                const prevMatch = previous.classSource === previous.source;
+                const currMatch = resolved.classSource === resolved.source;
+                if (currMatch && !prevMatch) {
+                    byId.set(id, resolved);
+                }
             }
         }
 
@@ -615,7 +634,7 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
         const zhClass = classZhMap.get(id);
 
         const classId = `${enClass.name}|${enClass.source}`;
-        const isBasicRules2024 = enClass.basicRules2024 === true;
+        const isBasicRules2024 = enClass.basicRules2024 === true || enClass.edition === 'one' || enClass.source === 'XPHB';
 
         const sourceMap = new Map<string, Record<string, any>>();
         for (const entry of classData.en.subclass) {
@@ -675,6 +694,8 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
 
         const superiorClassName = classNameMap.get(enSubclass.className) || enSubclass.className;
         const superiorId = `${superiorClassName}|${enSubclass.classSource}`;
+
+        const subclassIsBasicRules2024 = enSubclass.basicRules2024 === true || enSubclass.edition === 'one' || enSubclass.source === 'XPHB';
 
         const entityBase = buildEntityBase(
             enSubclass,
@@ -740,7 +761,7 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
         if (item.superiorfork?.superior === 'Artificer|EFA') {
             item.basicRules2024 = true;
         }
-        
+
         const className = item.superiorfork?.superior?.split('|')[0]?.toLowerCase() || 'other';
         const sourceId = item.mainSource.source;
         const sourceDir = path.join(subclassOutputDir, className, sourceId);

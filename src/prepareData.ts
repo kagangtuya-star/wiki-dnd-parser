@@ -576,7 +576,7 @@ export const createOutputFolders = async (generatePages: boolean) => {
         try {
             await fs.access('./output');
             // 只删除需要重新生成的文件夹，保留 contents、book、adventure
-            const dirsToClear = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'race'];
+            const dirsToClear = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'race', 'class'];
             for (const dir of dirsToClear) {
                 const dirPath = path.join('./output', dir);
                 try {
@@ -1973,6 +1973,7 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
                 dataType: 'item',
                 uid: `item_${id}`,
                 id: id,
+                basicRules2024: !!((enItem as any).basicRules2024 || (enItem as any).edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
                 ...common,
                 translator,
                 isBaseItem: true,
@@ -2513,6 +2514,7 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
                 dataType: 'item',
                 uid: `item_${id} `,
                 id: id,
+                basicRules2024: !!((enItem as any).basicRules2024 || (enItem as any).edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
                 ...common,
                 translator,
                 isBaseItem: false,
@@ -3110,6 +3112,7 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
             dataType: 'item',
             uid: `item_${opts.id}`,
             id: opts.id,
+            basicRules2024: !!(enItem.basicRules2024 || enItem.edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
             ...common,
             translator,
             rarity: opts.rarity ?? enItem.rarity,
@@ -3866,6 +3869,7 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
                 dataType: 'spell',
                 uid: `spell_${id}`,
                 id: id,
+                basicRules2024: !!((enSpell as any).basicRules2024 || (enSpell as any).edition === 'one' || (typeof enSpell.source === 'string' && enSpell.source.startsWith('X'))),
                 ...common,
                 translator,
                 displayName: {
@@ -4144,6 +4148,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                 dataType: 'bestiary',
                 uid: `bestiary_${id}`,
                 id,
+                basicRules2024: !!(enMonster.basicRules2024 || enMonster.edition === 'one' || (typeof enMonster.source === 'string' && enMonster.source.startsWith('X'))),
                 ...common,
                 referenceSources,
                 translator,
@@ -4210,6 +4215,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                 dataType: 'bestiary',
                 uid: `bestiary_${id}`,
                 id,
+                basicRules2024: !!(typeof source === 'string' && source.startsWith('X')),
                 ...common,
                 referenceSources: [],
                 translator,
