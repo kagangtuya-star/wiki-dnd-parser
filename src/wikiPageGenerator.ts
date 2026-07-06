@@ -35,6 +35,23 @@ interface WikiClassData {
     };
 }
 
+interface WikiRaceData {
+    id: string;
+    dataType: string;
+    displayName: {
+        zh?: string | null;
+        en?: string | null;
+    };
+    mainSource: {
+        source: string;
+        page: number;
+    };
+    superiorfork?: {
+        fork?: number;
+        superior?: string;
+    };
+}
+
 type SourceNameEntry = {
     zh?: string;
     en?: string;
@@ -58,6 +75,7 @@ type WikiPageGeneratorOptions = {
     magicVariants: Map<string, WikiItemData>;
     bestiary: Map<string, WikiBestiaryData>;
     classes: Map<string, WikiClassData>;
+    races: Map<string, WikiRaceData>;
     outputRoot?: string;
     logger?: (message: string) => void;
 };
@@ -67,6 +85,7 @@ type WikiPageGenerationResult = {
     itemFiles: number;
     bestiaryFiles: number;
     classFiles: number;
+    raceFiles: number;
     failed: number;
     skippedSelfRedirects: number;
     pageConflicts: number;
@@ -78,10 +97,12 @@ export class WikiPageGenerator {
     private readonly itemsDir: string;
     private readonly bestiaryDir: string;
     private readonly classesDir: string;
+    private readonly racesDir: string;
     private readonly spells: Map<string, WikiSpellData>;
     private readonly itemIndex: Map<string, WikiItemData> = new Map();
     private readonly bestiaryIndex: Map<string, WikiBestiaryData> = new Map();
     private readonly classIndex: Map<string, WikiClassData> = new Map();
+    private readonly raceIndex: Map<string, WikiRaceData> = new Map();
     private readonly sourceNames: Map<string, SourceNameEntry> = new Map();
     private readonly writtenFiles: Map<string, string> = new Map();
     private readonly logger: (message: string) => void;
@@ -96,6 +117,7 @@ export class WikiPageGenerator {
         this.itemsDir = path.join(this.outputRoot, '物品');
         this.bestiaryDir = path.join(this.outputRoot, '怪物');
         this.classesDir = path.join(this.outputRoot, '职业');
+        this.racesDir = path.join(this.outputRoot, '种族');
         this.spells = options.spells;
         this.logger = options.logger || (() => {});
         this.options = options;
@@ -103,6 +125,7 @@ export class WikiPageGenerator {
         this.buildItemIndex(options.baseItems, options.items, options.magicVariants);
         this.buildBestiaryIndex(options.bestiary);
         this.buildClassIndex(options.classes);
+        this.buildRaceIndex(options.races);
     }
 
     private buildClassIndex(classes: Map<string, WikiClassData>) {
@@ -111,11 +134,18 @@ export class WikiPageGenerator {
         }
     }
 
+    private buildRaceIndex(races: Map<string, WikiRaceData>) {
+        for (const [id, raceData] of races) {
+            this.raceIndex.set(id, raceData);
+        }
+    }
+
     async generateAll(): Promise<WikiPageGenerationResult> {
         await fs.mkdir(this.spellsDir, { recursive: true });
         await fs.mkdir(this.itemsDir, { recursive: true });
         await fs.mkdir(this.bestiaryDir, { recursive: true });
         await fs.mkdir(this.classesDir, { recursive: true });
+        await fs.mkdir(this.racesDir, { recursive: true });
 
         await this.buildSourceNameIndex(this.options.books);
 
@@ -123,12 +153,14 @@ export class WikiPageGenerator {
         const itemFiles = await this.generateItemPages();
         const bestiaryFiles = await this.generateBestiaryPages();
         const classFiles = await this.generateClassPages();
+        const raceFiles = await this.generateRacePages();
 
         return {
             spellFiles,
             itemFiles,
             bestiaryFiles,
             classFiles,
+            raceFiles,
             failed: 0,
             skippedSelfRedirects: this.skippedSelfRedirects,
             pageConflicts: this.pageConflicts,
@@ -861,6 +893,185 @@ export class WikiPageGenerator {
     }
 
     private async writeClassPage(filePath: string, content: string): Promise<boolean> {
+        const normalizedContent = `${content}\n`;
+        const existing = this.writtenFiles.get(filePath);
+
+        if (existing !== undefined) {
+            if (existing !== normalizedContent) {
+                this.pageConflicts += 1;
+                this.logger(`页面冲突，保留首个文件：${filePath}`);
+            }
+            return false;
+        }
+
+        await fs.writeFile(filePath, normalizedContent, 'utf-8');
+        this.writtenFiles.set(filePath, normalizedContent);
+        return true;
+    }
+
+    private async generateRacePages(): Promise<number> {
+        let written = 0;
+
+        const mainRaceMap = new Map<string, { zhName: string; enName: string; source: string }>();
+
+        for (const [id, raceData] of this.raceIndex) {
+            const fork = raceData.superiorfork?.fork ?? 0;
+            if (fork !== 0) continue;
+
+            const source = raceData.mainSource.source;
+            const zhName = raceData.displayName?.zh?.trim() || '';
+            const enName = raceData.displayName?.en?.trim() || '';
+
+            if (zhName || enName) {
+                mainRaceMap.set(id, { zhName, enName, source });
+            }
+        }
+
+        for (const [id, raceData] of this.raceIndex) {
+            const fork = raceData.superiorfork?.fork ?? 0;
+            const isMainRace = fork === 0;
+            const source = raceData.mainSource.source;
+            const zhName = raceData.displayName?.zh?.trim() || '';
+            const enName = raceData.displayName?.en?.trim() || '';
+
+            if (!zhName && !enName) continue;
+
+            if (isMainRace) {
+                const sourceTranslated = this.resolveSourceName(source);
+                const sourceNameEntry = this.sourceNames.get(source);
+                const sourceEnglishName = sourceNameEntry?.en || source;
+
+                const safeSourceZhDir = this.sanitizeFileSegment(sourceTranslated);
+                const zhContentDir = path.join(this.racesDir, safeSourceZhDir);
+                await fs.mkdir(zhContentDir, { recursive: true });
+
+                const mainZhTitle = zhName ? this.buildItemTitle(sourceTranslated, zhName) : (enName ? this.buildItemTitle(sourceTranslated, enName) : '');
+                if (mainZhTitle) {
+                    const displayNameForCard = zhName || enName;
+                    const mainContent = `{{种族卡|${displayNameForCard}|${source}}}`;
+                    const mainFilePath = path.join(zhContentDir, `${mainZhTitle}.wiki`);
+                    if (await this.writeRacePage(mainFilePath, mainContent)) {
+                        written++;
+                    }
+                }
+
+                if (enName) {
+                    const safeSourceEnDir = this.sanitizeFileSegment(sourceEnglishName);
+                    const enContentDir = path.join(this.racesDir, safeSourceEnDir);
+                    await fs.mkdir(enContentDir, { recursive: true });
+
+                    const mainZhTitle = zhName ? this.buildItemTitle(sourceTranslated, zhName) : this.buildItemTitle(sourceTranslated, enName);
+                    const targetWikiTitle = `种族/${sourceTranslated}/${mainZhTitle}`;
+                    const mainEnTitle = this.buildItemTitle(sourceEnglishName, enName);
+                    const mainFilePath = path.join(enContentDir, `${mainEnTitle}.wiki`);
+                    const enRedirectContent = `#重定向 [[${targetWikiTitle}]]`;
+                    if (await this.writeRacePage(mainFilePath, enRedirectContent)) {
+                        written++;
+                    }
+                }
+
+                const safeSourceIdDir = this.sanitizeFileSegment(source);
+                const redirectDir = path.join(this.racesDir, safeSourceIdDir);
+                await fs.mkdir(redirectDir, { recursive: true });
+
+                if (zhName) {
+                    const mainTitle = this.buildItemTitle(sourceTranslated, zhName);
+                    const targetWikiTitle = `种族/${sourceTranslated}/${mainTitle}`;
+                    const zhRedirectTitle = this.buildItemTitle(source, zhName);
+                    const zhRedirectPath = path.join(redirectDir, `${zhRedirectTitle}.wiki`);
+                    const zhRedirectContent = `#重定向 [[${targetWikiTitle}]]`;
+                    if (await this.writeRacePage(zhRedirectPath, zhRedirectContent)) {
+                        written++;
+                    }
+                }
+
+                if (enName) {
+                    const mainZhTitle = zhName ? this.buildItemTitle(sourceTranslated, zhName) : this.buildItemTitle(sourceTranslated, enName);
+                    const targetWikiTitle = `种族/${sourceTranslated}/${mainZhTitle}`;
+                    const enRedirectTitle = this.buildItemTitle(source, enName);
+                    const enRedirectPath = path.join(redirectDir, `${enRedirectTitle}.wiki`);
+                    const enRedirectContent = `#重定向 [[${targetWikiTitle}]]`;
+                    if (await this.writeRacePage(enRedirectPath, enRedirectContent)) {
+                        written++;
+                    }
+                }
+            } else {
+                const superiorId = raceData.superiorfork?.superior;
+                if (!superiorId) continue;
+
+                const mainRaceInfo = mainRaceMap.get(superiorId);
+                if (!mainRaceInfo) continue;
+
+                const mainSourceTranslated = this.resolveSourceName(mainRaceInfo.source);
+                const sourceTranslated = this.resolveSourceName(source);
+
+                if (zhName) {
+                    const mainZhName = mainRaceInfo.zhName;
+                    if (mainZhName) {
+                        const mainTitle = this.buildItemTitle(mainSourceTranslated, mainZhName);
+                        const zhRedirectTarget = `种族/${mainSourceTranslated}/${mainTitle}#${zhName}`;
+
+                        const safeSourceZhDir = this.sanitizeFileSegment(sourceTranslated);
+                        const zhContentDir = path.join(this.racesDir, safeSourceZhDir);
+                        await fs.mkdir(zhContentDir, { recursive: true });
+
+                        const mainZhTitle = this.buildItemTitle(sourceTranslated, zhName);
+                        const zhFilePath = path.join(zhContentDir, `${mainZhTitle}.wiki`);
+                        const zhContent = `#重定向 [[${zhRedirectTarget}]]`;
+                        if (await this.writeRacePage(zhFilePath, zhContent)) {
+                            written++;
+                        }
+
+                        const safeSourceIdDir = this.sanitizeFileSegment(source);
+                        const redirectDir = path.join(this.racesDir, safeSourceIdDir);
+                        await fs.mkdir(redirectDir, { recursive: true });
+
+                        const zhRedirectTitle = this.buildItemTitle(source, zhName);
+                        const zhRedirectPath = path.join(redirectDir, `${zhRedirectTitle}.wiki`);
+                        if (await this.writeRacePage(zhRedirectPath, zhContent)) {
+                            written++;
+                        }
+                    }
+                }
+
+                if (enName && enName !== zhName) {
+                    const mainEnName = mainRaceInfo.enName;
+                    if (mainEnName) {
+                        const mainTitle = this.buildItemTitle(mainSourceTranslated, mainEnName);
+                        const enRedirectTarget = `种族/${mainSourceTranslated}/${mainTitle}#${enName}`;
+
+                        const sourceNameEntry = this.sourceNames.get(source);
+                        const sourceEnglishName = sourceNameEntry?.en || source;
+
+                        const safeSourceEnDir = this.sanitizeFileSegment(sourceEnglishName);
+                        const enContentDir = path.join(this.racesDir, safeSourceEnDir);
+                        await fs.mkdir(enContentDir, { recursive: true });
+
+                        const mainEnTitle = this.buildItemTitle(sourceEnglishName, enName);
+                        const enFilePath = path.join(enContentDir, `${mainEnTitle}.wiki`);
+                        const enContent = `#重定向 [[${enRedirectTarget}]]`;
+                        if (await this.writeRacePage(enFilePath, enContent)) {
+                            written++;
+                        }
+
+                        const safeSourceIdDir = this.sanitizeFileSegment(source);
+                        const redirectDir = path.join(this.racesDir, safeSourceIdDir);
+                        await fs.mkdir(redirectDir, { recursive: true });
+
+                        const enRedirectTitle = this.buildItemTitle(source, enName);
+                        const enRedirectPath = path.join(redirectDir, `${enRedirectTitle}.wiki`);
+                        if (await this.writeRacePage(enRedirectPath, enContent)) {
+                            written++;
+                        }
+                    }
+                }
+            }
+        }
+
+        return written;
+    }
+
+    private async writeRacePage(filePath: string, content: string): Promise<boolean> {
         const normalizedContent = `${content}\n`;
         const existing = this.writtenFiles.get(filePath);
 

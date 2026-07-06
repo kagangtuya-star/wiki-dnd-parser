@@ -5106,6 +5106,39 @@ let isnavpillIds = new Set<string>();
             for (const sub of classResult.subclasses) {
                 classMap.set(sub.id, sub);
             }
+
+            // 加载种族数据
+            await runRaceExporter();
+            
+            const raceMap = new Map<string, any>();
+            const raceDir = path.join('./output', 'race');
+            if (await fs.access(raceDir).then(() => true).catch(() => false)) {
+                const races = await fs.readdir(raceDir);
+                for (const raceName of races) {
+                    const racePath = path.join(raceDir, raceName);
+                    if ((await fs.stat(racePath)).isDirectory()) {
+                        const sources = await fs.readdir(racePath);
+                        for (const source of sources) {
+                            const sourcePath = path.join(racePath, source);
+                            if ((await fs.stat(sourcePath)).isDirectory()) {
+                                const files = await fs.readdir(sourcePath);
+                                for (const file of files) {
+                                    if (file.endsWith('.json')) {
+                                        const filePath = path.join(sourcePath, file);
+                                        const content = await fs.readFile(filePath, 'utf-8');
+                                        try {
+                                            const raceData = JSON.parse(content);
+                                            raceMap.set(raceData.id, raceData);
+                                        } catch (err) {
+                                            console.warn(`[prepareData] 读取种族文件失败: ${filePath}`, err);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             
             const wikiPageGenerator = new WikiPageGenerator({
                 books: bookFiles,
@@ -5115,11 +5148,12 @@ let isnavpillIds = new Set<string>();
                 magicVariants: magicVariantMgr.db,
                 bestiary: bestiaryMgr.db,
                 classes: classMap,
+                races: raceMap,
                 logger: message => printProgress(`wikiPage: ${message}`),
             });
             const wikiPageResult = await wikiPageGenerator.generateAll();
             printProgress(
-                `wikiPage 完成 (spellFiles=${wikiPageResult.spellFiles}, itemFiles=${wikiPageResult.itemFiles}, bestiaryFiles=${wikiPageResult.bestiaryFiles}, classFiles=${wikiPageResult.classFiles}, failed=${wikiPageResult.failed}, skippedSelfRedirects=${wikiPageResult.skippedSelfRedirects}, pageConflicts=${wikiPageResult.pageConflicts})`
+                `wikiPage 完成 (spellFiles=${wikiPageResult.spellFiles}, itemFiles=${wikiPageResult.itemFiles}, bestiaryFiles=${wikiPageResult.bestiaryFiles}, classFiles=${wikiPageResult.classFiles}, raceFiles=${wikiPageResult.raceFiles}, failed=${wikiPageResult.failed}, skippedSelfRedirects=${wikiPageResult.skippedSelfRedirects}, pageConflicts=${wikiPageResult.pageConflicts})`
             );
         }
 

@@ -549,6 +549,16 @@ const generatePublicationHomepages = async (): Promise<void> => {
                 writtenFiles.set(enFilePath, enContent);
             }
         }
+
+        if (bookId && bookId !== nameZh && bookId !== nameEn) {
+            const idFilePath = path.join(homepageDir, `${sanitizeFileSegment(bookId)}.wiki`);
+            const idContent = `#重定向[[${nameZh || nameEn || bookId}]]\n`;
+            
+            if (!writtenFiles.has(idFilePath)) {
+                await fs.writeFile(idFilePath, idContent, 'utf-8');
+                writtenFiles.set(idFilePath, idContent);
+            }
+        }
     }
 
     console.error(`生成出版物首页完成，共 ${bookConfigs.size} 个出版物`);
