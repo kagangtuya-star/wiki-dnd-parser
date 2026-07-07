@@ -2,6 +2,7 @@ import { BaseExporter } from './baseExporter.js';
 
 export interface BackgroundExporterResult {
     count: number;
+    data: Record<string, any>[];
 }
 
 export const runBackgroundExporter = async (): Promise<BackgroundExporterResult> => {
@@ -14,5 +15,5 @@ export const runBackgroundExporter = async (): Promise<BackgroundExporterResult>
     });
     
     const result = await exporter.run();
-    return { count: result.count };
+    return { count: result.count, data: result.data };
 };

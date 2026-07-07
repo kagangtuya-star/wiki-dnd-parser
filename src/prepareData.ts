@@ -216,6 +216,12 @@ async function generateSourcesJson(
     itemMgr: ItemMgr,
     magicVariantMgr: MagicVariantMgr,
     bestiaryMgr: BestiaryMgr,
+    raceData: Record<string, any>[],
+    classData: Record<string, any>[],
+    backgroundData: Record<string, any>[],
+    hazardData: Record<string, any>[],
+    trapData: Record<string, any>[],
+    genericProfileData: Record<string, Record<string, any>[]>,
     outputDir: string
 ) {
     try {
@@ -300,6 +306,56 @@ async function generateSourcesJson(
             const sourceId = item.mainSource?.source;
             if (sourceId && sourceTypes[sourceId]) {
                 sourceTypes[sourceId].add('bestiary');
+            }
+        }
+
+        // 收集种族来源
+        for (const item of raceData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('race');
+            }
+        }
+
+        // 收集职业来源
+        for (const item of classData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('class');
+            }
+        }
+
+        // 收集背景来源
+        for (const item of backgroundData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('background');
+            }
+        }
+
+        // 收集危险来源
+        for (const item of hazardData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('hazard');
+            }
+        }
+
+        // 收集陷阱来源
+        for (const item of trapData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('trap');
+            }
+        }
+
+        // 收集其他通用数据类型来源
+        for (const [dataType, items] of Object.entries(genericProfileData)) {
+            for (const item of items) {
+                const sourceId = item.mainSource?.source;
+                if (sourceId && sourceTypes[sourceId]) {
+                    sourceTypes[sourceId].add(dataType);
+                }
             }
         }
 
@@ -5054,20 +5110,6 @@ let isnavpillIds = new Set<string>();
             printProgress(`itemMastery 完成 (${itemMasteryResult})`);
             printProgress(`itemType 完成 (${itemTypeResult})`);
 
-            // 生成 Sources.json
-            const namelistDir = path.join('./output', 'namelist');
-            await fs.mkdir(namelistDir, { recursive: true });
-            await generateSourcesJson(
-                bookMgr,
-                featMgr,
-                spellMgr,
-                baseItemMgr,
-                itemMgr,
-                magicVariantMgr,
-                bestiaryMgr,
-                namelistDir
-            );
-
             printProgress(`[prepareData] spell 完成 (${spellResult.count})`);
             printProgress(`[prepareData] bestiary 完成 (${bestiaryResult.count})`);
             printProgress(`[prepareData] item 完成 (${itemResult.count})`);
@@ -5085,15 +5127,39 @@ let isnavpillIds = new Set<string>();
             const otherGenericProfiles = genericProfiles.filter(p => 
                 !['race', 'background', 'trap', 'hazard'].includes(p.dataType)
             );
+            let genericProfileData: Record<string, Record<string, any>[]> = {};
             if (otherGenericProfiles.length > 0) {
-                genericProfileCounts = await runGenericProfiles(otherGenericProfiles, {
+                const genericResult = await runGenericProfiles(otherGenericProfiles, {
                     idMgr,
                     logger,
                 });
+                genericProfileCounts = genericResult.counts;
+                genericProfileData = genericResult.data;
                 for (const [dataType, count] of Object.entries(genericProfileCounts)) {
                     printProgress(`[prepareData] ${dataType} 完成 (${count})`);
                 }
             }
+
+            // 生成 Sources.json
+            const namelistDir = path.join('./output', 'namelist');
+            await fs.mkdir(namelistDir, { recursive: true });
+            const classData = [...classResult.classes, ...classResult.subclasses];
+            await generateSourcesJson(
+                bookMgr,
+                featMgr,
+                spellMgr,
+                baseItemMgr,
+                itemMgr,
+                magicVariantMgr,
+                bestiaryMgr,
+                raceResult.data,
+                classData,
+                backgroundResult.data,
+                hazardResult.data,
+                trapResult.data,
+                genericProfileData,
+                namelistDir
+            );
 
             await idMgr.generateFiles();
             await tagParser.generateFiles();

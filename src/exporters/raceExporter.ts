@@ -421,6 +421,7 @@ export interface RaceExporterResult {
     raceCount: number;
     subraceCount: number;
     subraceModCount: number;
+    data: Record<string, any>[];
 }
 
 export const runRaceExporter = async (): Promise<RaceExporterResult> => {
@@ -536,6 +537,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
     }
 
     const raceOutput: Record<string, any>[] = [];
+    const raceCoreMap = new Map<string, Record<string, any>>();
+
     for (const enRace of raceData.en.race) {
         const id = getDefaultId(enRace);
         const zhRace = raceZhMap.get(id);
@@ -579,6 +582,18 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             id
         );
 
+        const raceCore: Record<string, any> = {};
+        if (enRace.size) raceCore.size = enRace.size;
+        if (enRace.speed) raceCore.speed = enRace.speed;
+        if (enRace.ability) raceCore.ability = enRace.ability;
+        if (enRace.lineage) raceCore.lineage = enRace.lineage;
+        if (enRace.creatureTypes) raceCore.creatureTypes = enRace.creatureTypes;
+        if (enRace.skillProficiencies) raceCore.skillProficiencies = enRace.skillProficiencies;
+        if (enRace.languageProficiencies) raceCore.languageProficiencies = enRace.languageProficiencies;
+        if (enRace.additionalSpells) raceCore.additionalSpells = enRace.additionalSpells;
+        if (enRace.age) raceCore.age = enRace.age;
+        raceCoreMap.set(raceId, raceCore);
+
         raceOutput.push({
             ...raceEntityBase,
             races,
@@ -614,14 +629,32 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             baseId
         );
 
-        const item = {
+        const itemBase: Record<string, any> = {
             ...entityBase,
-            superiorfork: buildSuperiorfork({
-                superior: superiorId,
-                fork: 1,
-            }),
-            foundry: raceFoundryStore.getFull(baseId),
         };
+        const itemEntries = Object.entries(itemBase);
+        const abilityIndex = itemEntries.findIndex(([key]) => key === 'ability');
+        
+        const item: Record<string, any> = {};
+        if (abilityIndex >= 0) {
+            for (let i = 0; i < abilityIndex; i++) {
+                item[itemEntries[i][0]] = itemEntries[i][1];
+            }
+            item.raceName = superiorRaceName;
+            for (let i = abilityIndex; i < itemEntries.length; i++) {
+                item[itemEntries[i][0]] = itemEntries[i][1];
+            }
+        } else {
+            item.raceName = superiorRaceName;
+            Object.assign(item, itemBase);
+        }
+        
+        item.superiorfork = buildSuperiorfork({
+            superior: superiorId,
+            fork: 1,
+        });
+        item.superiorcore = raceCoreMap.get(superiorId) || {};
+        item.foundry = raceFoundryStore.getFull(baseId);
 
         if (isMod) {
             subraceModOutput.push(item);
@@ -748,5 +781,6 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
         raceCount: raceOutput.length,
         subraceCount: subraceOutput.length,
         subraceModCount: subraceModOutput.length,
+        data: [...raceOutput, ...subraceOutput, ...subraceModOutput],
     };
 };

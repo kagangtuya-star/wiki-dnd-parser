@@ -272,7 +272,7 @@ export class BaseExporter {
         console.log(`已生成 ${typeName}namelist.json 文件：${outputPath}`);
     }
 
-    async run(): Promise<{ count: number }> {
+    async run(): Promise<{ count: number; data: Record<string, any>[] }> {
         const { dataType } = this.config;
         const outputDir = path.join('./output', dataType);
 
@@ -282,6 +282,6 @@ export class BaseExporter {
         await this.writeOutputFiles(outputData, outputDir);
         await this.generateNameList(outputData, dataType);
 
-        return { count: outputData.length };
+        return { count: outputData.length, data: outputData };
     }
 }

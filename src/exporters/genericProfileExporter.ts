@@ -313,13 +313,71 @@ const runSingleProfile = async (
 export const runGenericProfiles = async (
     profiles: ExportProfile[],
     deps: GenericExporterDeps
-) => {
+): Promise<{ counts: Record<string, number>; data: Record<string, Record<string, any>[]> }> => {
     const fileCache = new Map<string, { en: Record<string, any>; zh: Record<string, any> }>();
     const counts: Record<string, number> = {};
+    const data: Record<string, Record<string, any>[]> = {};
 
     for (const profile of profiles) {
-        counts[profile.dataType] = await runSingleProfile(profile, deps, fileCache);
+        const result = await runSingleProfileWithData(profile, deps, fileCache);
+        counts[profile.dataType] = result.length;
+        data[profile.dataType] = result;
     }
 
-    return counts;
+    return { counts, data };
+};
+
+const runSingleProfileWithData = async (
+    profile: ExportProfile,
+    deps: GenericExporterDeps,
+    fileCache: Map<string, { en: Record<string, any>; zh: Record<string, any> }>
+): Promise<Record<string, any>[]> => {
+    const bilingual = await loadBilingualFileCached(profile.sourceFile, fileCache);
+    const enRawEntries = getRootEntries(bilingual.en, profile.rootKey);
+    const zhRawEntries = getRootEntries(bilingual.zh, profile.rootKey);
+
+    const { entries: enEntries, map: enMap } = dedupeEntries(
+        enRawEntries,
+        getDefaultId,
+        deps.logger,
+        profile.dataType
+    );
+    const { entries: zhEntries, map: zhMap } = dedupeEntries(
+        zhRawEntries,
+        getDefaultId,
+        deps.logger,
+        profile.dataType
+    );
+
+    let fluffStore: ReturnType<typeof buildFluffStore> | undefined;
+    if (profile.fluffFile && profile.fluffRootKey) {
+        const fluffBilingual = await loadBilingualFileCached(profile.fluffFile, fileCache);
+        fluffStore = buildFluffStore(
+            getRootEntries(fluffBilingual.zh, profile.fluffRootKey),
+            getRootEntries(fluffBilingual.en, profile.fluffRootKey)
+        );
+    }
+
+    const reprintMap = buildReprintMap(enEntries, getDefaultId);
+    const outputData: Record<string, any>[] = [];
+
+    for (const enItem of enEntries) {
+        const id = getDefaultId(enItem);
+        const zhItem = zhMap.get(id);
+        if (!zhItem) {
+            deps.logger.log(profile.dataType, `未找到中文版本条目：${enItem.name} (${id})`);
+        }
+        const full = fluffStore?.getFull(id);
+        outputData.push(buildEntity(profile, enItem, zhItem, enMap, reprintMap, full, deps.logger));
+    }
+
+    if (profile.outputMode === 'file') {
+        await writeFileOutput(profile, outputData, deps.logger);
+        await writeNameListOutput(profile, outputData);
+        console.log(`[prepareData] ${profile.dataType} 完成 (${outputData.length})`);
+    } else {
+        await writeCollectionOutput(profile, outputData);
+    }
+
+    return outputData;
 };

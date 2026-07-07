@@ -2,6 +2,7 @@ import { BaseExporter } from './baseExporter.js';
 
 export interface TrapExporterResult {
     count: number;
+    data: Record<string, any>[];
 }
 
 export const runTrapExporter = async (): Promise<TrapExporterResult> => {
@@ -14,5 +15,5 @@ export const runTrapExporter = async (): Promise<TrapExporterResult> => {
     });
     
     const result = await exporter.run();
-    return { count: result.count };
+    return { count: result.count, data: result.data };
 };
