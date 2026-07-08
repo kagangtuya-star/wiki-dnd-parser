@@ -582,6 +582,15 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             id
         );
 
+        if (!raceEntityBase.en?.creatureTypes) {
+            raceEntityBase.en = raceEntityBase.en || {};
+            raceEntityBase.en.creatureTypes = ['humanoid'];
+        }
+        if (!raceEntityBase.zh?.creatureTypes) {
+            raceEntityBase.zh = raceEntityBase.zh || {};
+            raceEntityBase.zh.creatureTypes = ['类人'];
+        }
+
         const raceCore: Record<string, any> = {};
         if (enRace.size) raceCore.size = enRace.size;
         if (enRace.speed) raceCore.speed = enRace.speed;
@@ -628,6 +637,15 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             dataType,
             baseId
         );
+
+        if (!entityBase.en?.creatureTypes) {
+            entityBase.en = entityBase.en || {};
+            entityBase.en.creatureTypes = ['humanoid'];
+        }
+        if (!entityBase.zh?.creatureTypes) {
+            entityBase.zh = entityBase.zh || {};
+            entityBase.zh.creatureTypes = ['类人'];
+        }
 
         const itemBase: Record<string, any> = {
             ...entityBase,

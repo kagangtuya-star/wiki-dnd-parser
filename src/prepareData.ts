@@ -4148,12 +4148,15 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
         const buildAllSources = (ids: string[]) => {
             const sources: { source: string; page: number }[] = [];
             const seen = new Set<string>();
+            const sourceMaxPage = new Map<string, number>();
             const addSource = (source: string, page: number) => {
                 if (!source) return;
                 const key = `${source}|${page}`;
                 if (seen.has(key)) return;
                 seen.add(key);
                 sources.push({ source, page });
+                const prev = sourceMaxPage.get(source) ?? -1;
+                if (page > prev) sourceMaxPage.set(source, page);
             };
 
             for (const relatedId of ids) {
@@ -4171,7 +4174,9 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                     addSource(extra.source, extra.page);
                 }
             }
-            return sources;
+
+            // 移除同一 source 下 page=0 的条目（当该 source 存在非零 page 时）
+            return sources.filter(item => item.page !== 0 || sourceMaxPage.get(item.source) === 0);
         };
 
         for (const enMonster of this.raw.en) {
@@ -4283,7 +4288,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                     source,
                     page: 0,
                 },
-                allSources: [{ source, page: 0 }],
+                allSources: [],
                 full: {
                     en: fullEn,
                     zh: fullZh,
@@ -4562,7 +4567,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
 
     async generateFiles() {
         const outputDir = './output/bestiary';
-        const writtenFileNames = new Set<string>();
+        const writtenFileNamesBySource = new Map<string, Set<string>>();
 
         for (const [id, bestiaryData] of this.db) {
             // 处理 fluff 数据中的特定格式文本
@@ -4738,6 +4743,10 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
             await fs.mkdir(sourceDir, { recursive: true });
 
             const preferredFileName = `${baseName}.json`;
+            if (!writtenFileNamesBySource.has(sourceId)) {
+                writtenFileNamesBySource.set(sourceId, new Set<string>());
+            }
+            const writtenFileNames = writtenFileNamesBySource.get(sourceId)!;
             const fileName = resolveCaseInsensitiveOutputFileName(
                 writtenFileNames,
                 preferredFileName,
