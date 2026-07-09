@@ -246,6 +246,19 @@ const getReplacedDisplayName = (
     };
 };
 
+const ensureAbilityChooseAmount = (data: Record<string, any>) => {
+    const processAbility = (ability: any[]) => {
+        for (const entry of ability) {
+            if (entry?.choose && typeof entry.choose === 'object' && !('amount' in entry.choose)) {
+                entry.choose.amount = 1;
+            }
+        }
+    };
+    if (Array.isArray(data.ability)) processAbility(data.ability);
+    if (data.en?.ability && Array.isArray(data.en.ability)) processAbility(data.en.ability);
+    if (data.zh?.ability && Array.isArray(data.zh.ability)) processAbility(data.zh.ability);
+};
+
 const buildEntityBase = (
     enItem: Record<string, any>,
     zhItem: Record<string, any> | null | undefined,
@@ -307,6 +320,7 @@ const buildEntityBase = (
     delete result.page;
     delete result.raceName;
     delete result.raceSource;
+    ensureAbilityChooseAmount(result);
     return result;
 };
 
@@ -671,7 +685,14 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             superior: superiorId,
             fork: 1,
         });
-        item.superiorcore = raceCoreMap.get(superiorId) || {};
+        const rawSuperiorCore = raceCoreMap.get(superiorId) || {};
+        const filteredSuperiorCore: Record<string, any> = {};
+        for (const [key, value] of Object.entries(rawSuperiorCore)) {
+            if (!(enSubrace.overwrite?.[key] ?? false)) {
+                filteredSuperiorCore[key] = value;
+            }
+        }
+        item.superiorcore = filteredSuperiorCore;
         item.foundry = raceFoundryStore.getFull(baseId);
 
         if (isMod) {
