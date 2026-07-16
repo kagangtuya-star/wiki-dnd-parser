@@ -1,6 +1,5 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import XLSX from 'xlsx';
 import config, { mwUtil } from '../config.js';
 import { parseContent, tagParser } from '../contentGen.js';
 import { buildFluffStore } from './fluff.js';
@@ -14,50 +13,12 @@ import {
     escapeFileName,
     extractTranslator,
     getDefaultId,
+    loadSubraceReplacementDictionary,
     normalizeReprintedAs,
     resolveCaseInsensitiveOutputFileName,
     splitStructuredRecordByDiff,
+    SubraceReplacement,
 } from './shared.js';
-
-interface SubraceReplacement {
-    subraceName: string;
-    subraceENGName: string;
-    subraceSource: string;
-    fullName: string;
-    fullENGName: string;
-    isStandalonePage: boolean;
-}
-
-const loadSubraceReplacementDictionary = (): Map<string, SubraceReplacement> => {
-    const dictionaryPath = path.join(process.cwd(), 'config/子种族名字替换词典.xlsx');
-    const workbook = XLSX.readFile(dictionaryPath);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(worksheet);
-    
-    const replacementMap = new Map<string, SubraceReplacement>();
-    
-    for (const row of data as any[]) {
-        const subraceENGName = row['缀名原名'] || row['原名全文'];
-        const subraceSource = row['子种族来源'];
-        const fullName = row['子种族全名'];
-        const fullENGName = row['原名全文'];
-        
-        if (subraceENGName && subraceSource && fullName && fullENGName) {
-            const key = `${subraceENGName}|${subraceSource}`;
-            replacementMap.set(key, {
-                subraceName: row['子种族缀名'] || '',
-                subraceENGName,
-                subraceSource,
-                fullName,
-                fullENGName,
-                isStandalonePage: row['是否作为单独页面存在'] !== false && row['是否作为单独页面存在'] !== 'false',
-            });
-        }
-    }
-    
-    return replacementMap;
-};
 
 const replaceRaceLinks = (text: string, replacementMap: Map<string, SubraceReplacement>): string => {
     return text.replace(/\{@race\s+([^}\s]+)/g, (match, raceName) => {

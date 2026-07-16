@@ -1,6 +1,90 @@
 import { createHash } from 'crypto';
 import path from 'path';
+import XLSX from 'xlsx';
 import { i18nKeyRules } from '../i18n.js';
+
+export interface SubraceReplacement {
+    subraceName: string;
+    subraceENGName: string;
+    subraceSource: string;
+    fullName: string;
+    fullENGName: string;
+    isStandalonePage: boolean;
+}
+
+const _subraceReplacementCache: { map: Map<string, SubraceReplacement>; nameMap: Map<string, SubraceReplacement> } | null = null;
+
+export const loadSubraceReplacementDictionary = (): Map<string, SubraceReplacement> => {
+    const dictionaryPath = path.join(process.cwd(), 'config/子种族名字替换词典.xlsx');
+    const workbook = XLSX.readFile(dictionaryPath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+    
+    const replacementMap = new Map<string, SubraceReplacement>();
+    
+    for (const row of data as any[]) {
+        const subraceENGName = row['缀名原名'] || row['原名全文'];
+        const subraceSource = row['子种族来源'];
+        const fullName = row['子种族全名'];
+        const fullENGName = row['原名全文'];
+        
+        if (subraceENGName && subraceSource && fullName && fullENGName) {
+            const key = `${subraceENGName}|${subraceSource}`;
+            replacementMap.set(key, {
+                subraceName: row['子种族缀名'] || '',
+                subraceENGName,
+                subraceSource,
+                fullName,
+                fullENGName,
+                isStandalonePage: row['是否作为单独页面存在'] !== false && row['是否作为单独页面存在'] !== 'false',
+            });
+        }
+    }
+    
+    return replacementMap;
+};
+
+export const loadSubraceReplacementByNameMap = (): Map<string, SubraceReplacement> => {
+    const dictionaryPath = path.join(process.cwd(), 'config/子种族名字替换词典.xlsx');
+    const workbook = XLSX.readFile(dictionaryPath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+    
+    const nameMap = new Map<string, SubraceReplacement>();
+    
+    for (const row of data as any[]) {
+        const subraceENGName = row['缀名原名'] || row['原名全文'];
+        const subraceSource = row['子种族来源'];
+        const fullName = row['子种族全名'];
+        const fullENGName = row['原名全文'];
+        const subraceName = row['子种族缀名'] || '';
+        
+        if (subraceENGName && subraceSource && fullName && fullENGName) {
+            const replacement: SubraceReplacement = {
+                subraceName,
+                subraceENGName,
+                subraceSource,
+                fullName,
+                fullENGName,
+                isStandalonePage: row['是否作为单独页面存在'] !== false && row['是否作为单独页面存在'] !== 'false',
+            };
+            const addKey = (key: string) => {
+                const normalizedKey = key.trim();
+                if (normalizedKey && !nameMap.has(normalizedKey)) {
+                    nameMap.set(normalizedKey, replacement);
+                }
+            };
+            addKey(subraceENGName.toLowerCase());
+            addKey(fullENGName.toLowerCase());
+            addKey(subraceName);
+            addKey(fullName);
+        }
+    }
+    
+    return nameMap;
+};
 
 export const escapeFileName = (name: string): string => {
     return name

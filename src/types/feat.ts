@@ -6,6 +6,7 @@ export type FeatFileEntry = {
     ENG_name?: string;
     source: string;
     page?: number;
+    translator?: string;
     prerequisite?: FeatPrerequisite[];
     toolProficiencies?: any;
     armorProficiencies?: any;
@@ -59,11 +60,8 @@ export type FeatFile = {
     feat: FeatFileEntry[];
 };
 
-export type WikiFeatEntry = {
-    name: string;
-
-    entries: ParagraphGroup;
-    html: string;
+export type WikiFeatEntry = Partial<FeatFileEntry> & {
+    html?: string;
 };
 
 export type WikiFeatData = WikiData<WikiFeatEntry, 'feat'> & {};

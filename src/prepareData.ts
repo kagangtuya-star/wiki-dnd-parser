@@ -10,7 +10,7 @@ import { promises as fs } from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import chalk from 'chalk';
-import { FeatFile, FeatFileEntry, WikiFeatData } from './types/feat';
+import { FeatFile, FeatFileEntry, WikiFeatData, WikiFeatEntry } from './types/feat';
 import {
     ItemBaseFile,
     ItemFile,
@@ -74,7 +74,8 @@ import { runClassExporter } from './exporters/classExporter.js';
 import { runSpellExporter } from './exporters/spellExporter.js';
 import { runBestiaryExporter } from './exporters/bestiaryExporter.js';
 import { runItemExporter } from './exporters/itemExporter.js';
-import { escapeFileName, sectionTextIdMap } from './exporters/shared.js';
+import { runFeatExporter } from './exporters/featExporter.js';
+import { escapeFileName, loadSubraceReplacementByNameMap, sectionTextIdMap, SubraceReplacement } from './exporters/shared.js';
 import { generateContents } from './generate-contents.js';
 import { splitBooks } from './split-books.js';
 
@@ -632,7 +633,7 @@ export const createOutputFolders = async (generatePages: boolean) => {
         try {
             await fs.access('./output');
             // 只删除需要重新生成的文件夹，保留 contents、book、adventure
-            const dirsToClear = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'race', 'class'];
+            const dirsToClear = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'race', 'class', 'feat'];
             for (const dir of dirsToClear) {
                 const dirPath = path.join('./output', dir);
                 try {
@@ -645,7 +646,7 @@ export const createOutputFolders = async (generatePages: boolean) => {
         } catch (error) {
             // output 目录不存在，跳过
         }
-        const dirs = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'contents', 'book', 'adventure', 'class', 'race'];
+        const dirs = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'contents', 'book', 'adventure', 'class', 'race', 'feat'];
         for (const dir of dirs) {
             const dirPath = path.join('./output', dir);
             try {
@@ -1176,12 +1177,15 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
 
     constructor() { }
     getId(feat: FeatFileEntry): string {
-        return `${feat.name}|${feat.source}`;
+        const name = feat.ENG_name ? feat.ENG_name.trim() : feat.name.trim();
+        return `${name}|${feat.source}`;
     }
     loadData(zh: FeatFile, en: FeatFile) {
         this.raw.zh = zh;
         this.raw.en = en;
         this.db.clear();
+
+        const subraceNameMap = loadSubraceReplacementByNameMap();
 
         idMgr.compare(
             'feat',
@@ -1193,7 +1197,6 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
             }
         );
 
-        // 第一遍：建立 reprintMap
         for (const enFeat of en.feat) {
             const id = this.getId(enFeat);
             const reprintedAs = normalizeReprintedAs(enFeat.reprintedAs);
@@ -1205,60 +1208,137 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
             }
         }
 
-        // 第二遍：生成数据
+        const featMap = new Map<string, FeatFileEntry>();
+        for (const enFeat of en.feat) {
+            featMap.set(this.getId(enFeat), enFeat);
+        }
+        const zhMap = new Map<string, FeatFileEntry>();
+        for (const zhFeat of zh.feat) {
+            zhMap.set(this.getId(zhFeat), zhFeat);
+        }
+        const allIds = new Set<string>([...featMap.keys(), ...zhMap.keys()]);
+        const pairs = [...allIds].map(id => ({
+            en: featMap.get(id) || null,
+            zh: zhMap.get(id) || null,
+        }));
+        const keySets = classifyI18nKeys(pairs, i18nKeyRules);
+
         for (const enFeat of en.feat) {
             const id = this.getId(enFeat);
             const zhFeat = zh.feat.find(f => this.getId(f) === id);
-            if (!zhFeat) {
-                logger.log('FeatMgr', `未找到中文版本的特性：${enFeat.name} (${id})`);
-            }
 
-            // 收集所有相关版本
             const relatedVersions = new Set<string>();
             normalizeReprintedAs(enFeat.reprintedAs).forEach(t => relatedVersions.add(t));
             this.reprintMap.get(id)?.forEach(s => relatedVersions.add(s));
+
+            const split = splitRecordByI18n(enFeat, zhFeat, keySets, {
+                emptyZhValue: '',
+            });
+            const common = { ...split.common };
+            const enOut: WikiFeatEntry = {
+                ...split.en,
+                name: enFeat.name,
+            };
+            const zhOut: WikiFeatEntry = {
+                ...split.zh,
+                name: zhFeat?.name || '',
+            };
+
+            const enEntries = enOut.entries ?? enFeat.entries ?? [];
+            if (Array.isArray(enEntries)) {
+                enOut.entries = enEntries;
+                enOut.html = parseContent(enEntries);
+            } else if (enEntries === '') {
+                enOut.entries = enEntries;
+                enOut.html = '';
+            } else {
+                enOut.entries = [];
+                enOut.html = '';
+            }
+            const zhEntries =
+                zhOut.entries !== undefined
+                    ? zhOut.entries
+                    : zhFeat
+                        ? zhFeat.entries
+                        : [];
+            if (Array.isArray(zhEntries)) {
+                zhOut.entries = zhEntries;
+                zhOut.html = parseContent(zhEntries);
+            } else {
+                zhOut.entries = [];
+                zhOut.html = '';
+            }
+
+            delete common.name;
+            delete common.source;
+            delete common.page;
+
+            const translator = extractTranslator(common, enOut, zhOut, zhFeat, enFeat);
+
+            const allSources = (() => {
+                const sources: { source: string; page: number }[] = [];
+                const seen = new Set<string>();
+                const addSource = (source: string, page: number) => {
+                    if (!source) return;
+                    const key = `${source}|${page}`;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    sources.push({ source, page });
+                };
+                addSource(enFeat.source, enFeat.page || 0);
+                if (enFeat.additionalSources) {
+                    for (const extra of enFeat.additionalSources) {
+                        addSource(extra.source, extra.page || 0);
+                    }
+                }
+                for (const extra of parseReprintedAsSources(enFeat.reprintedAs)) {
+                    addSource(extra.source, extra.page);
+                }
+                return sources;
+            })();
 
             const featData: WikiFeatData = {
                 dataType: 'feat',
                 uid: `feat_${id}`,
                 id: id,
-                mainSource: {
-                    source: enFeat.source,
-                    page: enFeat.page || 0,
-                },
+                ...common,
+                translator,
                 displayName: {
                     zh: zhFeat ? zhFeat.name : null,
                     en: enFeat.name,
                 },
-                allSources: (() => {
-                    const sources: { source: string; page: number }[] = [];
-                    if (enFeat.source) {
-                        sources.push({ source: enFeat.source, page: enFeat.page || 0 });
-                    }
-                    if (enFeat.additionalSources) {
-                        sources.push(...enFeat.additionalSources);
-                    }
-                    sources.push(...parseReprintedAsSources(enFeat.reprintedAs));
-                    return sources;
-                })(),
-                relatedVersions: relatedVersions.size > 0 ? [...relatedVersions] : undefined,
-                zh: zhFeat
-                    ? {
-                        name: zhFeat.name,
-                        entries: zhFeat.entries,
-                        html: parseContent(zhFeat.entries),
-                    }
-                    : null,
-                en: {
-                    name: enFeat.name,
-                    entries: enFeat.entries,
-                    html: parseContent(enFeat.entries),
+                mainSource: {
+                    source: enFeat.source,
+                    page: enFeat.page || 0,
                 },
+                allSources,
+                relatedVersions: relatedVersions.size > 0 ? [...relatedVersions] : undefined,
+                en: enOut,
+                zh: Object.keys(zhOut).length > 0 ? zhOut : null,
             };
+
+            const applySubraceReplacementToPrereq = (prereq: any[], isZh: boolean) => {
+                if (!Array.isArray(prereq)) return;
+                for (const entry of prereq) {
+                    if (!entry || typeof entry !== 'object') continue;
+                    if (Array.isArray(entry.race)) {
+                        for (const raceEntry of entry.race) {
+                            if (raceEntry && typeof raceEntry === 'object' && typeof raceEntry.subrace === 'string') {
+                                const key = isZh ? raceEntry.subrace : raceEntry.subrace.toLowerCase();
+                                const replacement = subraceNameMap.get(key);
+                                if (replacement) {
+                                    raceEntry.subrace = isZh ? replacement.fullName : replacement.fullENGName;
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            if (featData.en?.prerequisite) applySubraceReplacementToPrereq(featData.en.prerequisite, false);
+            if (featData.zh?.prerequisite) applySubraceReplacementToPrereq(featData.zh.prerequisite, true);
 
             this.db.set(id, featData);
         }
-        // add orphan zh feats to idMgr
     }
 
 
@@ -1270,6 +1350,20 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+
+        const outputDir = './output/feat';
+        for (const [id, featData] of this.db) {
+            const sourceId = featData.mainSource.source;
+            const sourceDir = path.join(outputDir, sourceId);
+            await fs.mkdir(sourceDir, { recursive: true });
+
+            const baseName = escapeFileName(mwUtil.getMwTitle(
+                featData.displayName.en || featData.displayName.zh || id
+            ));
+            const fileName = `${baseName}.json`;
+            const filePath = path.join(sourceDir, fileName);
+            await fs.writeFile(filePath, JSON.stringify(featData, null, 2), 'utf-8');
+        }
     }
 }
 export const featMgr = new FeatMgr();
@@ -5085,10 +5179,7 @@ let isnavpillIds = new Set<string>();
                     return bookMgr.db.size;
                 })(),
                 // 其他类别输出
-                (async () => {
-                    await featMgr.generateFiles();
-                    return featMgr.db.size;
-                })(),
+                runFeatExporter(featMgr),
                 (async () => {
                     await itemPropertyMgr.generateFiles();
                     return itemPropertyMgr.db.size;
@@ -5114,7 +5205,7 @@ let isnavpillIds = new Set<string>();
             ]);
             
             printProgress(`book 完成 (${bookResult})`);
-            printProgress(`feat 完成 (${featResult})`);
+            printProgress(`feat 完成 (${featResult.count})`);
             printProgress(`itemProperty 完成 (${itemPropertyResult})`);
             printProgress(`itemMastery 完成 (${itemMasteryResult})`);
             printProgress(`itemType 完成 (${itemTypeResult})`);
