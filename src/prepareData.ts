@@ -1334,8 +1334,27 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
                     }
                 }
             };
-            if (featData.en?.prerequisite) applySubraceReplacementToPrereq(featData.en.prerequisite, false);
-            if (featData.zh?.prerequisite) applySubraceReplacementToPrereq(featData.zh.prerequisite, true);
+            const convertLevelObjToClass = (prereq: any[]) => {
+                if (!Array.isArray(prereq)) return;
+                for (const entry of prereq) {
+                    if (!entry || typeof entry !== 'object') continue;
+                    if (entry.level && typeof entry.level === 'object' && entry.level.class && typeof entry.level.class === 'object') {
+                        const levelNum = entry.level.level;
+                        const classObj = entry.level.class;
+                        classObj.level = levelNum;
+                        entry.class = [classObj];
+                        delete entry.level;
+                    }
+                }
+            };
+            if (featData.en?.prerequisite) {
+                applySubraceReplacementToPrereq(featData.en.prerequisite, false);
+                convertLevelObjToClass(featData.en.prerequisite);
+            }
+            if (featData.zh?.prerequisite) {
+                applySubraceReplacementToPrereq(featData.zh.prerequisite, true);
+                convertLevelObjToClass(featData.zh.prerequisite);
+            }
 
             this.db.set(id, featData);
         }
