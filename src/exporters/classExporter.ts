@@ -660,7 +660,12 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
         const classes: string[] = [];
         for (const [, subclasses] of subclassMap) {
             if (subclasses.length > 0) {
-                classes.push(getDefaultId(subclasses[0]));
+                // 优先选择 basicRules2024 与母职业一致的子职业
+                const matched = subclasses.find(sub => {
+                    const subIsBasicRules2024 = sub.basicRules2024 === true || sub.edition === 'one' || sub.source === 'XPHB';
+                    return subIsBasicRules2024 === isBasicRules2024;
+                });
+                classes.push(getDefaultId(matched || subclasses[0]));
             }
         }
 
@@ -680,10 +685,12 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
             classEntityBase.en.classFeatures = expandClassFeatures(classEntityBase.en.classFeatures);
         }
         
-        classOutput.push({
-            ...classEntityBase,
-            classes,
-        });
+        if (enClass.isSidekick !== true) {
+            classOutput.push({
+                ...classEntityBase,
+                classes,
+            });
+        }
     }
 
     // 生成 subclass 数据
