@@ -12,6 +12,7 @@ export const runTrapExporter = async (): Promise<TrapExporterResult> => {
         dataKey: 'trap',
         fluffFile: 'fluff-trapshazards.json',
         fluffKey: 'trapFluff',
+        forceLocalizedKeys: ['duration'],
     });
     
     const result = await exporter.run();

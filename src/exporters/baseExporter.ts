@@ -38,6 +38,7 @@ export interface BaseExporterConfig {
     fluffFile?: string;
     fluffKey?: string;
     appendEnglishShadow?: boolean;
+    forceLocalizedKeys?: string[];
     customBuildEntity?: (
         enItem: Record<string, any>,
         zhItem: Record<string, any> | null | undefined,
@@ -102,7 +103,8 @@ const getDisplayName = (
 
 const defaultBuildEntity = (
     dataType: string,
-    appendEnglishShadow: boolean
+    appendEnglishShadow: boolean,
+    forceLocalizedKeys?: string[]
 ) => (
     enItem: Record<string, any>,
     zhItem: Record<string, any> | null | undefined,
@@ -112,8 +114,11 @@ const defaultBuildEntity = (
     _fluffStore: ReturnType<typeof buildFluffStore> | undefined
 ) => {
     const id = getDefaultId(enItem);
+    // 只有当存在中文翻译时，才强制本地化指定字段（如 duration）
+    const effectiveForceLocalized = zhItem ? forceLocalizedKeys : undefined;
     const split = splitStructuredRecordByDiff(enItem, zhItem, {
         emptyZhValue: '',
+        forceLocalizedKeys: effectiveForceLocalized,
     });
     const common = { ...split.common };
     const enOut = { ...split.en };
@@ -211,8 +216,8 @@ export class BaseExporter {
         zhEntries: Record<string, any>[],
         fluffStore: ReturnType<typeof buildFluffStore> | undefined
     ): Record<string, any>[] {
-        const { dataType, appendEnglishShadow = true, customBuildEntity } = this.config;
-        const buildEntityFn = customBuildEntity || defaultBuildEntity(dataType, appendEnglishShadow);
+        const { dataType, appendEnglishShadow = true, customBuildEntity, forceLocalizedKeys } = this.config;
+        const buildEntityFn = customBuildEntity || defaultBuildEntity(dataType, appendEnglishShadow, forceLocalizedKeys);
 
         const { seenEn, seenZh } = this.buildEntryMaps(enEntries, zhEntries);
         const reprintMap = buildReprintMap(enEntries, getDefaultId);

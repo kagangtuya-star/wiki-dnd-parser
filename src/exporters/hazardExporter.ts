@@ -12,6 +12,7 @@ export const runHazardExporter = async (): Promise<HazardExporterResult> => {
         dataKey: 'hazard',
         fluffFile: 'fluff-trapshazards.json',
         fluffKey: 'hazardFluff',
+        forceLocalizedKeys: ['duration'],
     });
     
     const result = await exporter.run();
