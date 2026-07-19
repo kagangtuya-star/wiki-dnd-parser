@@ -222,6 +222,30 @@ class TagParser {
             return result;
         }
 
+        // 处理{@trap}和{@hazard}标签，为没有来源后缀的添加|DMG后缀
+        if ((tag.tagName === '@trap' || tag.tagName === '@hazard') && tag.param) {
+            const parts = tag.param.split('|');
+            const name = parts[0].trim();
+            let source = parts[1]?.trim() || '';
+            let restParams = parts.slice(2);
+            
+            if (!source) {
+                source = 'DMG';
+            }
+            
+            const restStr = restParams.length > 0 ? '|' + restParams.join('|') : '';
+            const result = `{${tag.tagName} ${name}|${source}${restStr}}`;
+            
+            const newParam = `${name}|${source}${restStr}`;
+            if (this.allTags.has(tag.tagName)) {
+                this.allTags.get(tag.tagName)!.add(newParam);
+            } else {
+                this.allTags.set(tag.tagName, new Set([newParam]));
+            }
+            
+            return result;
+        }
+
         // 处理{@class}标签，将特性位置（等级-索引）转换为特性名称
         if (tag.tagName === '@class' && tag.param) {
             const parts = tag.param.split('|');
