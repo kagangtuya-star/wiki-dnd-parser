@@ -64,7 +64,7 @@ import {
 } from './bestiaryUtils.js';
 import { WikiPageGenerator } from './wikiPageGenerator.js';
 import { genericProfiles } from './exporters/profiles.js';
-import { runGenericProfiles } from './exporters/genericProfileExporter.js';
+import { runGenericFileExporter } from './exporters/genericFileExporter.js';
 import { runAdventureExporter } from './exporters/adventureExporter.js';
 import { runRaceExporter } from './exporters/raceExporter.js';
 import { runBackgroundExporter } from './exporters/backgroundExporter.js';
@@ -5248,14 +5248,14 @@ let isnavpillIds = new Set<string>();
             );
             let genericProfileData: Record<string, Record<string, any>[]> = {};
             if (otherGenericProfiles.length > 0) {
-                const genericResult = await runGenericProfiles(otherGenericProfiles, {
+                const genericResult = await runGenericFileExporter(otherGenericProfiles, {
                     idMgr,
                     logger,
                 });
                 genericProfileCounts = genericResult.counts;
                 genericProfileData = genericResult.data;
                 for (const [dataType, count] of Object.entries(genericProfileCounts)) {
-                    printProgress(`[prepareData] ${dataType} 完成 (${count})`);
+                    printProgress(`${dataType} 完成 (${count})`);
                 }
             }
 

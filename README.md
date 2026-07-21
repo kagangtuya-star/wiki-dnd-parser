@@ -32,7 +32,20 @@
 | `trapExporter.ts`           | trap                                                    |
 | `classExporter.ts`          | class / subclass                                        |
 | `adventureExporter.ts`      | adventure（生成 namelist）                                  |
-| `genericProfileExporter.ts` | 其他通用类型（deity、vehicleUpgrade、condition 等 collection 型输出） |
+| `deityExporter.ts`          | deity                                                   |
+| `languageExporter.ts`        | language                                                |
+| `rewardExporter.ts`          | reward                                                  |
+| `psionicExporter.ts`         | psionic                                                 |
+| `recipeExporter.ts`          | recipe                                                  |
+| `homecraftExporter.ts`       | homecraft                                               |
+| `deckExporter.ts`            | deck                                                    |
+| `bastionExporter.ts`         | bastion                                                 |
+| `cultExporter.ts`            | cult                                                    |
+| `boonExporter.ts`            | boon                                                    |
+| `charOptionExporter.ts`      | charoption                                              |
+| `optionalFeatureExporter.ts`| optionalfeature                                         |
+| `genericFileExporter.ts`    | 通用 file 模式核心逻辑（供上述独立导出器调用）                             |
+| `genericProfileExporter.ts` | 其他通用类型（vehicle、vehicleUpgrade、variantrule、monsterfeature、condition、disease、skill、sense、object） |
 
 - 共享 helper：`src/exporters/shared.ts` / `src/exporters/fluff.ts`
   - 负责 ID、重印版本聚合、fluff `_copy/_mod` 继承、双语拆分与文件名去重。
@@ -62,8 +75,7 @@ json 输出产物（`npm run start`）：
 - `output/collection/featCollection.json`
 - `output/collection/itemPropertyCollection.json`
 - `output/collection/itemTypeCollection.json`
-- `output/collection/*Collection.json`
-  - 现已覆盖 `deity`、`vehicle`、`vehicleUpgrade`、`variantrule`、`monsterfeature`、`optionalfeature`、`condition`、`disease`、`language`、`skill`、`sense`、`charoption`、`bastion`、`deck`、`cult`、`boon`、`recipe`、`reward`、`object`、`psionic`
+- `output/collection/itemMasteryCollection.json`
 - `output/item/{来源}/*.json`（基础物品与物品，按来源分文件夹）
 - `output/spell/{来源}/*.json`
 - `output/bestiary/{来源}/*.json`
@@ -74,6 +86,29 @@ json 输出产物（`npm run start`）：
 - `output/class/{母职业}/{来源}/*.json`
 - `output/subclass/{来源}/*.json`
 - `output/adventure/{来源}/*.json`
+- `output/feat/{来源}/*.json`
+- `output/deity/{来源}/*.json`
+- `output/language/{来源}/*.json`
+- `output/reward/{来源}/*.json`
+- `output/psionic/{来源}/*.json`
+- `output/recipe/{来源}/*.json`
+- `output/homecraft/{来源}/*.json`
+- `output/deck/{来源}/*.json`
+- `output/bastion/{来源}/*.json`
+- `output/cult/{来源}/*.json`
+- `output/boon/{来源}/*.json`
+- `output/charoption/{来源}/*.json`
+- `output/optionalfeature/{来源}/*.json`
+- `output/vehicle/{来源}/*.json`
+- `output/vehicleUpgrade/{来源}/*.json`
+- `output/variantrule/{来源}/*.json`
+- `output/monsterfeature/{来源}/*.json`
+- `output/condition/{来源}/*.json`
+- `output/disease/{来源}/*.json`
+- `output/skill/{来源}/*.json`
+- `output/sense/{来源}/*.json`
+- `output/object/{来源}/*.json`
+- `output/tables/{来源}/*.json`（表格数据，特殊处理）
 - `output/namelist/*.json`（名字列表）
 - `output/contents/book/*.json` / `output/contents/adventure/*.json`（目录）
 - `output/logs.json`（缺失或异常记录）
@@ -111,7 +146,8 @@ Wiki 文件名格式：**中文名.wiki**（按来源分文件夹存放）
 运行日志格式
 各类型完成时输出统一格式日志：`[prepareData] {类型} 完成 ({数量})`
 
-- spell、bestiary、item、race、background、hazard、trap、class、subclass、adventure
+- book、feat、itemProperty、itemMastery、itemType、spell、bestiary、item、adventure、race、background、hazard、trap、class、subclass
+- deity、vehicle、vehicleUpgrade、variantrule、monsterfeature、optionalfeature、condition、disease、language、skill、sense、charoption、bastion、deck、cult、boon、recipe、reward、object、psionic、homecraft
 
 备注
 
