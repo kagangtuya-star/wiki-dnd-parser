@@ -1,4 +1,4 @@
-import {
+﻿﻿import {
     BookContents,
     BookFile,
     BookFileEntry,
@@ -48,7 +48,6 @@ import {
     SpellFluffFile,
     WikiSpellData,
 } from './types/spells';
-
 import {
     MonsterFile,
     MonsterFileEntry,
@@ -78,6 +77,171 @@ import { runFeatExporter } from './exporters/featExporter.js';
 import { escapeFileName, loadSubraceReplacementByNameMap, sectionTextIdMap, SubraceReplacement } from './exporters/shared.js';
 import { generateContents } from './generate-contents.js';
 import { splitBooks } from './split-books.js';
+
+interface InputChangedArray {
+    name: string;
+    type: 'added' | 'modified' | 'removed';
+    count?: number;
+    changedUids?: string[];
+    addedUids?: string[];
+    removedUids?: string[];
+}
+
+interface InputChangedFile {
+    filePath: string;
+    locale: 'zh' | 'en';
+    status: 'added' | 'modified' | 'deleted';
+    changedArrays: InputChangedArray[];
+}
+
+interface InputReplaceLogs {
+    commit: {
+        hash: string;
+        message: string;
+        author: string;
+        date: string;
+    };
+    previousCommit: {
+        hash: string;
+        message: string;
+        author: string;
+        date: string;
+    };
+    changedFiles: InputChangedFile[];
+    generatedAt: string;
+}
+
+interface OutputChangedFile {
+    filePath: string;
+    dataType: string;
+    source: string;
+}
+
+interface OutputReplaceLogs {
+    inputCommit: string;
+    inputCommitMessage: string;
+    changedOutputFiles: OutputChangedFile[];
+    generatedAt: string;
+}
+
+let inputReplaceLogs: InputReplaceLogs | null = null;
+let changedUidsSet: Set<string> | null = null;
+const changedOutputFiles: OutputChangedFile[] = [];
+
+const getCommonParentDir = (path1: string, path2: string): string => {
+    const dir1 = path.dirname(path1);
+    const dir2 = path.dirname(path2);
+    const parts1 = dir1.split(/[\\/]/);
+    const parts2 = dir2.split(/[\\/]/);
+    const commonParts: string[] = [];
+    const minLength = Math.min(parts1.length, parts2.length);
+    for (let i = 0; i < minLength; i++) {
+        if (parts1[i] === parts2[i]) {
+            commonParts.push(parts1[i]);
+        } else {
+            break;
+        }
+    }
+    return commonParts.length > 0 ? commonParts.join('/') : dir1;
+};
+
+const inputArrayToCollectionMap: Record<string, string> = {
+    'items-base.json:itemProperty': 'itemProperty',
+    'items-base.json:itemType': 'itemType',
+    'items-base.json:itemMastery': 'itemMastery',
+    'items-base.json:itemEntry': 'itemEntry',
+    'items-base.json:itemTypeAdditionalEntries': 'itemTypeAdditionalEntries',
+    'books.json:book': 'book',
+    'feats.json:feat': 'feat',
+    'spells.json:spell': 'spell',
+};
+
+const buildChangedUidsSet = (logs: InputReplaceLogs): Set<string> => {
+    const uidSet = new Set<string>();
+    for (const file of logs.changedFiles) {
+        for (const arr of file.changedArrays) {
+            if (arr.changedUids) {
+                for (const uid of arr.changedUids) {
+                    uidSet.add(uid);
+                }
+            }
+            if (arr.addedUids) {
+                for (const uid of arr.addedUids) {
+                    uidSet.add(uid);
+                }
+            }
+            if (arr.removedUids) {
+                for (const uid of arr.removedUids) {
+                    uidSet.add(uid);
+                }
+            }
+            const mapKey = `${file.filePath}:${arr.name}`;
+            const collectionName = inputArrayToCollectionMap[mapKey];
+            if (collectionName) {
+                uidSet.add(`__collection__:${collectionName}`);
+            }
+            if (!arr.changedUids && !arr.addedUids && !arr.removedUids) {
+                uidSet.add(`__file__:${file.filePath}:${arr.name}`);
+            }
+        }
+    }
+    return uidSet;
+};
+
+const loadInputReplaceLogs = async (): Promise<void> => {
+    const commonParentDir = getCommonParentDir(config.DATA_ZH_DIR, config.DATA_EN_DIR);
+    const inputPath = path.join(commonParentDir, 'replace-logs.json');
+    try {
+        const content = await fs.readFile(inputPath, 'utf-8');
+        const parsed = JSON.parse(content) as InputReplaceLogs;
+        inputReplaceLogs = parsed;
+        changedUidsSet = buildChangedUidsSet(parsed);
+        console.log(chalk.cyan(`[prepareData] 已加载 ${inputPath}，检测到 ${parsed.changedFiles.length} 个变更文件，${changedUidsSet.size} 个变更 UID`));
+    } catch {
+        inputReplaceLogs = null;
+        changedUidsSet = null;
+        console.log(chalk.cyan(`[prepareData] 未找到 ${inputPath}，跳过变更跟踪`));
+    }
+};
+
+const isUidChanged = (uid: string): boolean => {
+    if (!inputReplaceLogs || !changedUidsSet) return false;
+    return changedUidsSet.has(uid);
+};
+
+const trackOutputFile = (filePath: string, dataType: string, source: string, uid?: string): void => {
+    if (!inputReplaceLogs) return;
+    
+    if (uid !== undefined && uid !== '__collection__') {
+        if (!isUidChanged(uid)) {
+            return;
+        }
+    } else if (uid === '__collection__') {
+        if (!isUidChanged(`__collection__:${dataType}`)) {
+            return;
+        }
+    }
+    
+    const existingIndex = changedOutputFiles.findIndex(f => f.filePath === filePath);
+    if (existingIndex === -1) {
+        changedOutputFiles.push({ filePath, dataType, source });
+    }
+};
+
+const generateOutputReplaceLogs = async (): Promise<void> => {
+    if (!inputReplaceLogs) return;
+    
+    const outputReplaceLogs: OutputReplaceLogs = {
+        inputCommit: inputReplaceLogs.commit.hash,
+        inputCommitMessage: inputReplaceLogs.commit.message,
+        changedOutputFiles: changedOutputFiles,
+        generatedAt: new Date().toISOString()
+    };
+    
+    const outputPath = path.join('./output', 'replace-logs.json');
+    await fs.writeFile(outputPath, JSON.stringify(outputReplaceLogs, null, 2), 'utf-8');
+    console.log(chalk.cyan(`[prepareData] 已生成 output/replace-logs.json，记录了 ${changedOutputFiles.length} 个输出文件变更`));
+};
 
 const CONFIG_CONTENTS_DIR = './config/contents';
 
@@ -1153,13 +1317,13 @@ class BookMgr implements DataMgr<BookFileEntry> {
         }
     }
     async generateFiles() {
-        // dertect if there is a './output/collection/bookCollection.json', if yes, delete it
         const outputPath = './output/collection/bookCollection.json';
         const output = {
             type: 'bookCollection',
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/bookCollection.json', 'book', 'collection', '__collection__');
     }
 }
 export const bookMgr = new BookMgr();
@@ -1369,6 +1533,7 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/featCollection.json', 'feat', 'collection', '__collection__');
 
         const outputDir = './output/feat';
         for (const [id, featData] of this.db) {
@@ -1382,6 +1547,7 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
             const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(featData, null, 2), 'utf-8');
+            trackOutputFile(`feat/${sourceId}/${fileName}`, 'feat', sourceId, id);
         }
     }
 }
@@ -1486,6 +1652,7 @@ class ItemPropertyMgr implements DataMgr<ItemProperty> {
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/itemPropertyCollection.json', 'itemProperty', 'collection', '__collection__');
     }
 }
 export const itemPropertyMgr = new ItemPropertyMgr();
@@ -1704,6 +1871,7 @@ class ItemTypeMgr implements DataMgr<ItemType> {
             data: allData,
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/itemTypeCollection.json', 'itemType', 'collection', '__collection__');
     }
 
     // 创建新版或旧版来源的类别副本
@@ -1812,6 +1980,7 @@ class ItemMasteryMgr implements DataMgr<ItemMastery> {
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/itemMasteryCollection.json', 'itemMastery', 'collection', '__collection__');
     }
 }
 export const itemMasteryMgr = new ItemMasteryMgr();
@@ -2257,7 +2426,7 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
             const finalProcessedData = processBonusReplacements(reorderedData);
 
             await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
-            //     console.log(`已生成物品文件：${ filePath } `);
+            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
         }
     }
 
@@ -2863,6 +3032,7 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
             const finalProcessedData = processBonusReplacements(reorderedData);
 
             await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
+            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
         }
     }
 
@@ -3741,6 +3911,7 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
             const finalProcessedData = processBonusReplacements(reorderedData);
 
             await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
+            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
         }
     }
 
@@ -4095,6 +4266,7 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
             const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(spellData, null, 2), 'utf-8');
+            trackOutputFile(`spell/${sourceId}/${fileName}`, 'spell', sourceId, id);
         }
     }
 }
@@ -4871,6 +5043,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
             this.transformSpellcastingSpells(reorderedData);
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(reorderedData, null, 2), 'utf-8');
+            trackOutputFile(`bestiary/${sourceId}/${fileName}`, 'bestiary', sourceId, id);
         }
     }
 }
@@ -5015,6 +5188,9 @@ let isnavpillIds = new Set<string>();
         printProgress('开始准备数据');
         await createOutputFolders(generatePages);
         printProgress('输出目录已重建');
+        
+        // 加载 input/replace-logs.json
+        await loadInputReplaceLogs();
 
         // 生成出版物目录和分割出版物（仅在非page模式下）
         let contentsResult = { bookCount: 0, adventureCount: 0, copiedCount: 0 };
@@ -5284,6 +5460,9 @@ let isnavpillIds = new Set<string>();
             await tagParser.generateFiles();
             await logger.generateFile();
             await processGeneratedFiles();
+            
+            // 生成 output/replace-logs.json
+            await generateOutputReplaceLogs();
         } else {
             // npm run page: 只生成 wiki 页面到 output_page 目录
             // 先加载 class 数据
@@ -5346,6 +5525,10 @@ let isnavpillIds = new Set<string>();
             printProgress(
                 `wikiPage 完成 (spellFiles=${wikiPageResult.spellFiles}, itemFiles=${wikiPageResult.itemFiles}, bestiaryFiles=${wikiPageResult.bestiaryFiles}, classFiles=${wikiPageResult.classFiles}, raceFiles=${wikiPageResult.raceFiles}, failed=${wikiPageResult.failed}, skippedSelfRedirects=${wikiPageResult.skippedSelfRedirects}, pageConflicts=${wikiPageResult.pageConflicts})`
             );
+
+            const wikiPageMapPath = './output/_json-page-wiki.json';
+            await fs.writeFile(wikiPageMapPath, JSON.stringify(wikiPageGenerator.pageJsonMap, null, 2), 'utf-8');
+            printProgress(`已生成 ${wikiPageMapPath}，记录了 ${wikiPageGenerator.pageJsonMap.length} 个页面映射`);
         }
 
         const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(2);

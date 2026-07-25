@@ -7,6 +7,27 @@ import { WikiSpellData } from './types/spells.js';
 import { WikiBestiaryData } from './types/bestiary.js';
 import { escapeFileName } from './exporters/shared.js';
 
+type PageJsonMapEntry = {
+    wikiPath: string;
+    jsonPath: string;
+    bookId: string;
+    pageId: string;
+    locale: 'zh' | 'en';
+};
+
+const getMwTitle = (title: string): string => {
+    return title.trim()
+        .replace(/\\/g, '_0_')
+        .replace(/\//g, '_9_')
+        .replace(/:/g, '_2_')
+        .replace(/\*/g, '_3_')
+        .replace(/"/g, '_4_')
+        .replace(/</g, '_5_')
+        .replace(/>/g, '_6_')
+        .replace(/\|/g, '_7_')
+        .replace(/\?/g, '_8_');
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CONFIG_CONTENTS_DIR = path.join(__dirname, '..', 'config', 'contents');
@@ -108,6 +129,7 @@ export class WikiPageGenerator {
     private readonly logger: (message: string) => void;
     private skippedSelfRedirects = 0;
     private pageConflicts = 0;
+    public readonly pageJsonMap: PageJsonMapEntry[] = [];
 
     private readonly options: WikiPageGeneratorOptions;
 
@@ -309,6 +331,41 @@ export class WikiPageGenerator {
         return fileTitle.replace(/_9_/g, '/');
     }
 
+    private getBaseName(displayName: string | undefined, id: string): string {
+        return escapeFileName(getMwTitle(displayName || id));
+    }
+
+    private computeJsonPath(dataType: string, sourceId: string, displayNameEn: string | null | undefined, displayNameZh: string | null | undefined, id: string): string {
+        const baseName = this.getBaseName(displayNameEn ?? undefined, id) || this.getBaseName(displayNameZh ?? undefined, id);
+        return `${dataType}/${sourceId}/${baseName}.json`;
+    }
+
+    private computeClassJsonPath(className: string, sourceId: string, displayNameEn: string | null | undefined, displayNameZh: string | null | undefined, id: string): string {
+        const lowerClassName = (className || 'other').toLowerCase();
+        const baseName = this.getBaseName(displayNameEn ?? undefined, id) || this.getBaseName(displayNameZh ?? undefined, id);
+        return `class/${lowerClassName}/${sourceId}/${baseName}.json`;
+    }
+
+    private computeRaceJsonPath(raceName: string, sourceId: string, id: string): string {
+        const lowerRaceName = (raceName || 'other').toLowerCase();
+        const idName = id.split('|')[0];
+        const baseName = escapeFileName(getMwTitle(idName));
+        return `race/${lowerRaceName}/${sourceId}/${baseName}.json`;
+    }
+
+    private recordPageMap(wikiFilePath: string, jsonPath: string, sourceId: string, pageId: string, locale: 'zh' | 'en'): void {
+        const normalizedOutputRoot = path.normalize(this.outputRoot);
+        let relativeWikiPath = path.normalize(wikiFilePath).replace(normalizedOutputRoot + path.sep, '');
+        relativeWikiPath = relativeWikiPath.replace(/\\/g, '/');
+        this.pageJsonMap.push({
+            wikiPath: relativeWikiPath,
+            jsonPath,
+            bookId: sourceId,
+            pageId,
+            locale,
+        });
+    }
+
     private normalizeItemHierarchy(item: WikiItemData): HierarchyInfo {
         const superiorfork = item.superiorfork;
         return {
@@ -346,7 +403,13 @@ export class WikiPageGenerator {
         return this.itemIndex.get(hierarchy.originId) || item;
     }
 
-    private async writePage(dir: string, title: string, content: string, sourceDir?: string): Promise<boolean> {
+    private async writePage(
+        dir: string,
+        title: string,
+        content: string,
+        sourceDir?: string,
+        mapInfo?: { jsonPath: string; sourceId: string; pageId: string; locale: 'zh' | 'en' }
+    ): Promise<boolean> {
         let targetDir = dir;
         if (sourceDir) {
             const escapedSourceDir = escapeFileName(sourceDir);
@@ -367,6 +430,9 @@ export class WikiPageGenerator {
 
         await fs.writeFile(filePath, normalizedContent, 'utf-8');
         this.writtenFiles.set(filePath, normalizedContent);
+        if (mapInfo && !content.startsWith('#重定向')) {
+            this.recordPageMap(filePath, mapInfo.jsonPath, mapInfo.sourceId, mapInfo.pageId, mapInfo.locale);
+        }
         return true;
     }
 
@@ -374,28 +440,30 @@ export class WikiPageGenerator {
         dir: string,
         title: string,
         targetTitle: string,
-        sourceDir?: string
+        sourceDir?: string,
+        mapInfo?: { jsonPath: string; sourceId: string; pageId: string; locale: 'zh' | 'en' }
     ): Promise<boolean> {
         if (title === targetTitle) {
             this.skippedSelfRedirects += 1;
             return false;
         }
-        return this.writePage(dir, title, `#重定向 [[${targetTitle}]]`, sourceDir);
+        return this.writePage(dir, title, `#重定向 [[${targetTitle}]]`, sourceDir, mapInfo);
     }
 
     private async generateSpellPages(): Promise<number> {
         let written = 0;
 
-        for (const [, spell] of this.spells) {
+        for (const [id, spell] of this.spells) {
             const sourceId = spell.mainSource.source;
             const sourceTranslated = this.resolveSourceName(sourceId);
             const nameZh = this.getRawNameZh(spell);
             const nameEn = this.getRawNameEn(spell);
             const mainTitle = this.buildSpellTitle(sourceTranslated, nameZh);
             const mainContent = `{{法术卡|${nameZh}|${sourceId}}}`;
+            const jsonPath = this.computeJsonPath('spell', sourceId, spell.displayName?.en, spell.displayName?.zh, id);
 
             // 在中文来源文件夹写主文件
-            if (await this.writePage(this.spellsDir, mainTitle, mainContent, sourceTranslated)) {
+            if (await this.writePage(this.spellsDir, mainTitle, mainContent, sourceTranslated, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                 written += 1;
             }
 
@@ -403,11 +471,11 @@ export class WikiPageGenerator {
             const zhRedirectTitle = this.buildSpellTitle(sourceId, nameZh);
             const enRedirectTitle = this.buildSpellTitle(sourceId, nameEn);
             const targetWikiTitle = `法术/${sourceTranslated}/${mainTitle}`;
-            
-            if (await this.writeRedirectPage(this.spellsDir, zhRedirectTitle, targetWikiTitle, sourceId)) {
+
+            if (await this.writeRedirectPage(this.spellsDir, zhRedirectTitle, targetWikiTitle, sourceId, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                 written += 1;
             }
-            if (await this.writeRedirectPage(this.spellsDir, enRedirectTitle, targetWikiTitle, sourceId)) {
+            if (await this.writeRedirectPage(this.spellsDir, enRedirectTitle, targetWikiTitle, sourceId, { jsonPath, sourceId, pageId: id, locale: 'en' })) {
                 written += 1;
             }
         }
@@ -500,48 +568,49 @@ export class WikiPageGenerator {
             const nameZh = this.getRawNameZh(item);
             const nameEn = this.getRawNameEn(item);
             const hierarchy = this.normalizeItemHierarchy(item);
+            const jsonPath = this.computeJsonPath('item', sourceId, item.displayName?.en, item.displayName?.zh, id);
 
             // 判断是否是真正的顶级条目（不重定向到其他页面）
             const isTrueTopLevel = hierarchy.fork === 0 || !hierarchy.superiorId;
-            
+
             if (isTrueTopLevel) {
                 // 真正的顶级条目：在中文来源文件夹写模板内容
                 const mainTitle = this.buildItemTitle(sourceTranslated, nameZh);
                 const mainContent = `{{物品卡|${nameZh}|${sourceId}}}`;
-                
-                if (await this.writePage(this.itemsDir, mainTitle, mainContent, sourceTranslated)) {
+
+                if (await this.writePage(this.itemsDir, mainTitle, mainContent, sourceTranslated, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                     written += 1;
                 }
-                
+
                 // 同时在 id 来源文件夹也写重定向到中文来源的模板页面
                 const zhRedirectTitle = this.buildItemTitle(sourceId, nameZh);
                 const enRedirectTitle = this.buildItemTitle(sourceId, nameEn);
                 const targetWikiTitle = `物品/${sourceTranslated}/${mainTitle}`;
-                
-                if (await this.writeRedirectPage(this.itemsDir, zhRedirectTitle, targetWikiTitle, sourceId)) {
+
+                if (await this.writeRedirectPage(this.itemsDir, zhRedirectTitle, targetWikiTitle, sourceId, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                     written += 1;
                 }
-                if (await this.writeRedirectPage(this.itemsDir, enRedirectTitle, targetWikiTitle, sourceId)) {
+                if (await this.writeRedirectPage(this.itemsDir, enRedirectTitle, targetWikiTitle, sourceId, { jsonPath, sourceId, pageId: id, locale: 'en' })) {
                     written += 1;
                 }
             } else {
                 // 非顶级条目：直接使用最终重定向目标
                 const finalTarget = redirectMap.get(id) || '';
-                
+
                 // 在中文来源文件夹直接写重定向到最终模板
                 const mainTitle = this.buildItemTitle(sourceTranslated, nameZh);
-                if (await this.writeRedirectPage(this.itemsDir, mainTitle, finalTarget, sourceTranslated)) {
+                if (await this.writeRedirectPage(this.itemsDir, mainTitle, finalTarget, sourceTranslated, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                     written += 1;
                 }
-                
+
                 // 在 id 来源文件夹也直接写重定向到最终模板
                 const zhRedirectTitle = this.buildItemTitle(sourceId, nameZh);
                 const enRedirectTitle = this.buildItemTitle(sourceId, nameEn);
-                
-                if (await this.writeRedirectPage(this.itemsDir, zhRedirectTitle, finalTarget, sourceId)) {
+
+                if (await this.writeRedirectPage(this.itemsDir, zhRedirectTitle, finalTarget, sourceId, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                     written += 1;
                 }
-                if (await this.writeRedirectPage(this.itemsDir, enRedirectTitle, finalTarget, sourceId)) {
+                if (await this.writeRedirectPage(this.itemsDir, enRedirectTitle, finalTarget, sourceId, { jsonPath, sourceId, pageId: id, locale: 'en' })) {
                     written += 1;
                 }
             }
@@ -719,48 +788,49 @@ export class WikiPageGenerator {
             const nameEn = this.getRawNameEn(monster);
             const hierarchy = this.normalizeMonsterHierarchy(monster);
             const anyMonster = monster as any;
+            const jsonPath = this.computeJsonPath('bestiary', sourceId, monster.displayName?.en, monster.displayName?.zh, id);
 
             // 判断是否是真正的顶级条目（不在重定向表中）
             const isTrueTopLevel = !redirectMap.has(id);
-            
+
             if (isTrueTopLevel) {
                 // 真正的顶级条目：在中文来源文件夹写模板内容
                 const mainTitle = this.buildMonsterTitle(sourceTranslated, nameZh);
                 const mainContent = `{{怪物卡|${nameZh}|${sourceId}}}`;
-                
-                if (await this.writePage(this.bestiaryDir, mainTitle, mainContent, sourceTranslated)) {
+
+                if (await this.writePage(this.bestiaryDir, mainTitle, mainContent, sourceTranslated, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                     written += 1;
                 }
-                
+
                 // 同时在 id 来源文件夹也写重定向到中文来源的模板页面
                 const zhRedirectTitle = this.buildMonsterTitle(sourceId, nameZh);
                 const enRedirectTitle = this.buildMonsterTitle(sourceId, nameEn);
                 const targetWikiTitle = `怪物/${sourceTranslated}/${mainTitle}`;
-                
-                if (await this.writeRedirectPage(this.bestiaryDir, zhRedirectTitle, targetWikiTitle, sourceId)) {
+
+                if (await this.writeRedirectPage(this.bestiaryDir, zhRedirectTitle, targetWikiTitle, sourceId, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                     written += 1;
                 }
-                if (await this.writeRedirectPage(this.bestiaryDir, enRedirectTitle, targetWikiTitle, sourceId)) {
+                if (await this.writeRedirectPage(this.bestiaryDir, enRedirectTitle, targetWikiTitle, sourceId, { jsonPath, sourceId, pageId: id, locale: 'en' })) {
                     written += 1;
                 }
             } else {
                 // 非顶级条目：直接使用重定向表中的最终目标
                 const finalTarget = redirectMap.get(id) || '';
-                
+
                 // 在中文来源文件夹直接写重定向到最终模板
                 const mainTitle = this.buildMonsterTitle(sourceTranslated, nameZh);
-                if (await this.writeRedirectPage(this.bestiaryDir, mainTitle, finalTarget, sourceTranslated)) {
+                if (await this.writeRedirectPage(this.bestiaryDir, mainTitle, finalTarget, sourceTranslated, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                     written += 1;
                 }
-                
+
                 // 在 id 来源文件夹也直接写重定向到最终模板
                 const zhRedirectTitle = this.buildMonsterTitle(sourceId, nameZh);
                 const enRedirectTitle = this.buildMonsterTitle(sourceId, nameEn);
-                
-                if (await this.writeRedirectPage(this.bestiaryDir, zhRedirectTitle, finalTarget, sourceId)) {
+
+                if (await this.writeRedirectPage(this.bestiaryDir, zhRedirectTitle, finalTarget, sourceId, { jsonPath, sourceId, pageId: id, locale: 'zh' })) {
                     written += 1;
                 }
-                if (await this.writeRedirectPage(this.bestiaryDir, enRedirectTitle, finalTarget, sourceId)) {
+                if (await this.writeRedirectPage(this.bestiaryDir, enRedirectTitle, finalTarget, sourceId, { jsonPath, sourceId, pageId: id, locale: 'en' })) {
                     written += 1;
                 }
             }
@@ -798,6 +868,8 @@ export class WikiPageGenerator {
             const source = classData.mainSource.source;
             const zhName = classData.displayName?.zh?.trim() || classData.zh?.name?.trim() || '';
             const enName = classData.displayName?.en?.trim() || classData.en?.name?.trim() || '';
+            const classNameForPath = enName || id.split('|')[0] || 'other';
+            const jsonPath = this.computeClassJsonPath(classNameForPath, source, classData.displayName?.en, classData.displayName?.zh, id);
 
             if (!zhName && !enName) continue;
 
@@ -810,7 +882,7 @@ export class WikiPageGenerator {
                 if (zhName) {
                     const zhFilePath = path.join(contentDir, `${zhName}.wiki`);
                     const zhContent = `{{职业卡|${zhName}|${source}|zh}}`;
-                    if (await this.writeClassPage(zhFilePath, zhContent)) {
+                    if (await this.writeClassPage(zhFilePath, zhContent, { jsonPath, sourceId: source, pageId: id, locale: 'zh' })) {
                         written++;
                     }
                 }
@@ -819,7 +891,7 @@ export class WikiPageGenerator {
                 if (enName && enName !== zhName) {
                     const enFilePath = path.join(contentDir, `${enName}.wiki`);
                     const enContent = `{{职业卡|${enName}|${source}|en}}`;
-                    if (await this.writeClassPage(enFilePath, enContent)) {
+                    if (await this.writeClassPage(enFilePath, enContent, { jsonPath, sourceId: source, pageId: id, locale: 'en' })) {
                         written++;
                     }
                 }
@@ -833,7 +905,7 @@ export class WikiPageGenerator {
                     const zhContentPagePath = `职业/${rulesVersion}/${zhName}`;
                     const zhRedirectPath = path.join(redirectDir, `${zhName}.wiki`);
                     const zhRedirectContent = `#重定向 [[${zhContentPagePath}]]`;
-                    if (await this.writeClassPage(zhRedirectPath, zhRedirectContent)) {
+                    if (await this.writeClassPage(zhRedirectPath, zhRedirectContent, { jsonPath, sourceId: source, pageId: id, locale: 'zh' })) {
                         written++;
                     }
                 }
@@ -843,7 +915,7 @@ export class WikiPageGenerator {
                     const enContentPagePath = `职业/${rulesVersion}/${enName}`;
                     const enRedirectPath = path.join(redirectDir, `${enName}.wiki`);
                     const enRedirectContent = `#重定向 [[${enContentPagePath}]]`;
-                    if (await this.writeClassPage(enRedirectPath, enRedirectContent)) {
+                    if (await this.writeClassPage(enRedirectPath, enRedirectContent, { jsonPath, sourceId: source, pageId: id, locale: 'en' })) {
                         written++;
                     }
                 }
@@ -856,7 +928,7 @@ export class WikiPageGenerator {
                 if (!mainClassInfo) continue;
 
                 const mainRulesVersion = mainClassInfo.rulesVersion;
-                
+
                 // 生成重定向页面
                 const redirectDir = path.join(this.classesDir, source);
                 await fs.mkdir(redirectDir, { recursive: true });
@@ -868,7 +940,7 @@ export class WikiPageGenerator {
                         const zhRedirectTarget = `职业/${mainRulesVersion}/${mainZhName}#${zhName}`;
                         const zhRedirectPath = path.join(redirectDir, `${zhName}.wiki`);
                         const zhRedirectContent = `#重定向 [[${zhRedirectTarget}]]`;
-                        if (await this.writeClassPage(zhRedirectPath, zhRedirectContent)) {
+                        if (await this.writeClassPage(zhRedirectPath, zhRedirectContent, { jsonPath, sourceId: source, pageId: id, locale: 'zh' })) {
                             written++;
                         }
                     }
@@ -881,7 +953,7 @@ export class WikiPageGenerator {
                         const enRedirectTarget = `职业/${mainRulesVersion}/${mainEnName}#${enName}`;
                         const enRedirectPath = path.join(redirectDir, `${enName}.wiki`);
                         const enRedirectContent = `#重定向 [[${enRedirectTarget}]]`;
-                        if (await this.writeClassPage(enRedirectPath, enRedirectContent)) {
+                        if (await this.writeClassPage(enRedirectPath, enRedirectContent, { jsonPath, sourceId: source, pageId: id, locale: 'en' })) {
                             written++;
                         }
                     }
@@ -892,7 +964,7 @@ export class WikiPageGenerator {
         return written;
     }
 
-    private async writeClassPage(filePath: string, content: string): Promise<boolean> {
+    private async writeClassPage(filePath: string, content: string, mapInfo?: { jsonPath: string; sourceId: string; pageId: string; locale: 'zh' | 'en' }): Promise<boolean> {
         const normalizedContent = `${content}\n`;
         const existing = this.writtenFiles.get(filePath);
 
@@ -906,6 +978,9 @@ export class WikiPageGenerator {
 
         await fs.writeFile(filePath, normalizedContent, 'utf-8');
         this.writtenFiles.set(filePath, normalizedContent);
+        if (mapInfo && !content.startsWith('#重定向')) {
+            this.recordPageMap(filePath, mapInfo.jsonPath, mapInfo.sourceId, mapInfo.pageId, mapInfo.locale);
+        }
         return true;
     }
 
@@ -933,6 +1008,8 @@ export class WikiPageGenerator {
             const source = raceData.mainSource.source;
             const zhName = raceData.displayName?.zh?.trim() || '';
             const enName = raceData.displayName?.en?.trim() || '';
+            const raceNameForPath = enName || id.split('|')[0] || 'other';
+            const jsonPath = this.computeRaceJsonPath(raceNameForPath, source, id);
 
             if (!zhName && !enName) continue;
 
@@ -950,7 +1027,7 @@ export class WikiPageGenerator {
                     const displayNameForCard = zhName || enName;
                     const mainContent = `{{种族卡|${displayNameForCard}|${source}}}`;
                     const mainFilePath = path.join(zhContentDir, `${mainZhTitle}.wiki`);
-                    if (await this.writeRacePage(mainFilePath, mainContent)) {
+                    if (await this.writeRacePage(mainFilePath, mainContent, { jsonPath, sourceId: source, pageId: id, locale: 'zh' })) {
                         written++;
                     }
                 }
@@ -965,7 +1042,7 @@ export class WikiPageGenerator {
                     const mainEnTitle = this.buildItemTitle(sourceEnglishName, enName);
                     const mainFilePath = path.join(enContentDir, `${mainEnTitle}.wiki`);
                     const enRedirectContent = `#重定向 [[${targetWikiTitle}]]`;
-                    if (await this.writeRacePage(mainFilePath, enRedirectContent)) {
+                    if (await this.writeRacePage(mainFilePath, enRedirectContent, { jsonPath, sourceId: source, pageId: id, locale: 'en' })) {
                         written++;
                     }
                 }
@@ -980,7 +1057,7 @@ export class WikiPageGenerator {
                     const zhRedirectTitle = this.buildItemTitle(source, zhName);
                     const zhRedirectPath = path.join(redirectDir, `${zhRedirectTitle}.wiki`);
                     const zhRedirectContent = `#重定向 [[${targetWikiTitle}]]`;
-                    if (await this.writeRacePage(zhRedirectPath, zhRedirectContent)) {
+                    if (await this.writeRacePage(zhRedirectPath, zhRedirectContent, { jsonPath, sourceId: source, pageId: id, locale: 'zh' })) {
                         written++;
                     }
                 }
@@ -991,7 +1068,7 @@ export class WikiPageGenerator {
                     const enRedirectTitle = this.buildItemTitle(source, enName);
                     const enRedirectPath = path.join(redirectDir, `${enRedirectTitle}.wiki`);
                     const enRedirectContent = `#重定向 [[${targetWikiTitle}]]`;
-                    if (await this.writeRacePage(enRedirectPath, enRedirectContent)) {
+                    if (await this.writeRacePage(enRedirectPath, enRedirectContent, { jsonPath, sourceId: source, pageId: id, locale: 'en' })) {
                         written++;
                     }
                 }
@@ -1018,7 +1095,7 @@ export class WikiPageGenerator {
                         const mainZhTitle = this.buildItemTitle(sourceTranslated, zhName);
                         const zhFilePath = path.join(zhContentDir, `${mainZhTitle}.wiki`);
                         const zhContent = `#重定向 [[${zhRedirectTarget}]]`;
-                        if (await this.writeRacePage(zhFilePath, zhContent)) {
+                        if (await this.writeRacePage(zhFilePath, zhContent, { jsonPath, sourceId: source, pageId: id, locale: 'zh' })) {
                             written++;
                         }
 
@@ -1028,7 +1105,7 @@ export class WikiPageGenerator {
 
                         const zhRedirectTitle = this.buildItemTitle(source, zhName);
                         const zhRedirectPath = path.join(redirectDir, `${zhRedirectTitle}.wiki`);
-                        if (await this.writeRacePage(zhRedirectPath, zhContent)) {
+                        if (await this.writeRacePage(zhRedirectPath, zhContent, { jsonPath, sourceId: source, pageId: id, locale: 'zh' })) {
                             written++;
                         }
                     }
@@ -1050,7 +1127,7 @@ export class WikiPageGenerator {
                         const mainEnTitle = this.buildItemTitle(sourceEnglishName, enName);
                         const enFilePath = path.join(enContentDir, `${mainEnTitle}.wiki`);
                         const enContent = `#重定向 [[${enRedirectTarget}]]`;
-                        if (await this.writeRacePage(enFilePath, enContent)) {
+                        if (await this.writeRacePage(enFilePath, enContent, { jsonPath, sourceId: source, pageId: id, locale: 'en' })) {
                             written++;
                         }
 
@@ -1060,7 +1137,7 @@ export class WikiPageGenerator {
 
                         const enRedirectTitle = this.buildItemTitle(source, enName);
                         const enRedirectPath = path.join(redirectDir, `${enRedirectTitle}.wiki`);
-                        if (await this.writeRacePage(enRedirectPath, enContent)) {
+                        if (await this.writeRacePage(enRedirectPath, enContent, { jsonPath, sourceId: source, pageId: id, locale: 'en' })) {
                             written++;
                         }
                     }
@@ -1071,7 +1148,7 @@ export class WikiPageGenerator {
         return written;
     }
 
-    private async writeRacePage(filePath: string, content: string): Promise<boolean> {
+    private async writeRacePage(filePath: string, content: string, mapInfo?: { jsonPath: string; sourceId: string; pageId: string; locale: 'zh' | 'en' }): Promise<boolean> {
         const normalizedContent = `${content}\n`;
         const existing = this.writtenFiles.get(filePath);
 
@@ -1085,6 +1162,9 @@ export class WikiPageGenerator {
 
         await fs.writeFile(filePath, normalizedContent, 'utf-8');
         this.writtenFiles.set(filePath, normalizedContent);
+        if (mapInfo && !content.startsWith('#重定向')) {
+            this.recordPageMap(filePath, mapInfo.jsonPath, mapInfo.sourceId, mapInfo.pageId, mapInfo.locale);
+        }
         return true;
     }
 }

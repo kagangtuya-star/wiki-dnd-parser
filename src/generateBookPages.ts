@@ -101,6 +101,13 @@ interface BookContentConfig {
 
 const bookConfigs: Map<string, BookContentConfig> = new Map();
 const writtenFiles: Map<string, string> = new Map();
+const pageJsonMap: Array<{
+    wikiPath: string;
+    jsonPath: string;
+    bookId: string;
+    pageId: string;
+    locale: 'zh' | 'en';
+}> = [];
 
 const loadBookConfigs = async (): Promise<void> => {
     try {
@@ -377,7 +384,8 @@ const writePage = async (
     isAdventure: boolean,
     pageId: string,
     pageNameZh: string,
-    pageNameEn: string
+    pageNameEn: string,
+    jsonPath?: string
 ): Promise<boolean> => {
     const categoryFolder = isAdventure ? '模组' : '扩展';
     const bookName = isZh ? bookNameZh : bookNameEn;
@@ -396,6 +404,23 @@ const writePage = async (
     } else {
         await fs.writeFile(filePath, normalizedContent, 'utf-8');
         writtenFiles.set(filePath, normalizedContent);
+        
+        if (jsonPath && !content.startsWith('#重定向')) {
+            const baseDir = path.normalize(dir);
+            const normalizedFilePath = path.normalize(filePath);
+            let relativeWikiPath = normalizedFilePath.replace(baseDir + path.sep, '');
+            if (relativeWikiPath === normalizedFilePath) {
+                relativeWikiPath = normalizedFilePath.replace(path.basename(baseDir) + path.sep, '');
+            }
+            relativeWikiPath = relativeWikiPath.replace(/\\/g, '/');
+            pageJsonMap.push({
+                wikiPath: relativeWikiPath,
+                jsonPath: jsonPath,
+                bookId,
+                pageId,
+                locale: isZh ? 'zh' : 'en'
+            });
+        }
     }
 
     const finalBookNameZh = bookNameZh || bookNameEn;
@@ -471,6 +496,8 @@ const processBook = async (bookDir: string, bookId: string, isAdventure: boolean
                     fullNameEn = [...parentPartsEn, fullNameEn].join('_1_');
                 }
 
+                const relativeJsonPath = isAdventure ? `adventure/${bookId}/${file}` : `book/${bookId}/${file}`;
+
                 if (pageData.zh || pageData.displayName?.zh) {
                     const zhContent = `{{内容|${pageId}|${bookId}|zh}}`;
                     if (await writePage(
@@ -484,7 +511,8 @@ const processBook = async (bookDir: string, bookId: string, isAdventure: boolean
                         isAdventure,
                         pageId,
                         baseNameZh,
-                        baseNameEn
+                        baseNameEn,
+                        relativeJsonPath
                     )) {
                         zhCount++;
                     }
@@ -503,7 +531,8 @@ const processBook = async (bookDir: string, bookId: string, isAdventure: boolean
                         isAdventure,
                         pageId,
                         baseNameZh,
-                        baseNameEn
+                        baseNameEn,
+                        relativeJsonPath
                     )) {
                         enCount++;
                     }
@@ -639,6 +668,21 @@ const main = async () => {
         const result = await generateAll();
         console.log(`生成完成！中文: ${result.totalZh}，英文: ${result.totalEn}`);
         console.log(`处理书籍: ${result.processedBooks}，处理冒险: ${result.processedAdventures}`);
+
+        const wikiPageMapPath = './output/_json-page-wiki.json';
+        let wikiPageMap: any[] = [];
+        try {
+            const content = await fs.readFile(wikiPageMapPath, 'utf-8');
+            wikiPageMap = JSON.parse(content);
+            console.log(`读取 wiki 页面映射 ${wikiPageMapPath}，${wikiPageMap.length} 个条目`);
+        } catch {
+            console.log(`未找到 ${wikiPageMapPath}，跳过合并`);
+        }
+
+        const mergedMap = [...wikiPageMap, ...pageJsonMap];
+        const jsonPageOutputPath = './output/json-page.json';
+        await fs.writeFile(jsonPageOutputPath, JSON.stringify(mergedMap, null, 2), 'utf-8');
+        console.log(`已生成 ${jsonPageOutputPath}，记录了 ${mergedMap.length} 个页面映射`);
     } catch (error) {
         console.error('生成页面失败:', error);
         process.exit(1);
