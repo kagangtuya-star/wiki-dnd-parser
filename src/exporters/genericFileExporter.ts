@@ -11,6 +11,7 @@ import {
     escapeFileName,
     extractTranslator,
     getDefaultId,
+    hasLocalizedDifference,
     normalizeReprintedAs,
     resolveCaseInsensitiveOutputFileName,
     splitStructuredRecordByDiff,
@@ -230,6 +231,26 @@ const buildEntity = (
     };
 };
 
+const collectDiffKeys = (
+    enEntries: Record<string, any>[],
+    zhMap: Map<string, Record<string, any>>
+): Set<string> => {
+    const diffKeys = new Set<string>();
+    for (const enItem of enEntries) {
+        const id = getDefaultId(enItem);
+        const zhItem = zhMap.get(id);
+        if (!zhItem) continue;
+        const keys = new Set([...Object.keys(enItem), ...Object.keys(zhItem)]);
+        for (const key of keys) {
+            if (diffKeys.has(key)) continue;
+            if (hasLocalizedDifference(enItem[key], zhItem[key])) {
+                diffKeys.add(key);
+            }
+        }
+    }
+    return diffKeys;
+};
+
 const runSingleProfile = async (
     profile: ExportProfile,
     deps: { idMgr: IdMgrLike; logger: LoggerLike },
@@ -268,6 +289,15 @@ const runSingleProfile = async (
     }
 
     const reprintMap = buildReprintMap(enEntries, getDefaultId);
+
+    // 预扫描：找出所有条目中存在汉化差异的键，强制该类型所有文件都拆分这些键
+    const diffKeys = collectDiffKeys(enEntries, zhMap);
+    const baseForceLocalized = new Set(profile.forceLocalizedKeys || []);
+    const effectiveForceLocalized = [...new Set([...baseForceLocalized, ...diffKeys])];
+    const effectiveProfile = effectiveForceLocalized.length > baseForceLocalized.size
+        ? { ...profile, forceLocalizedKeys: effectiveForceLocalized }
+        : profile;
+
     const outputData: Record<string, any>[] = [];
 
     for (const enItem of enEntries) {
@@ -277,7 +307,7 @@ const runSingleProfile = async (
             deps.logger.log(profile.dataType, `未找到中文版本条目：${enItem.name} (${id})`);
         }
         const full = fluffStore?.getFull(id);
-        outputData.push(buildEntity(profile, enItem, zhItem, enMap, reprintMap, full, deps.logger));
+        outputData.push(buildEntity(effectiveProfile, enItem, zhItem, enMap, reprintMap, full, deps.logger));
     }
 
     await writeFileOutput(profile, outputData, deps.logger);

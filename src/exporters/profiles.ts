@@ -139,6 +139,7 @@ export const genericProfiles: ExportProfile[] = [
         fluffRootKey: 'facilityFluff',
         outputMode: 'file',
         i18nStrategy: 'deep-first-level',
+        forceLocalizedKeys: ['prerequisite'],
     },
     {
         dataType: 'deck',
