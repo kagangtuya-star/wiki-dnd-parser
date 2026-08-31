@@ -409,7 +409,8 @@ const processContentEntry = async (
     zhData: any[],
     chapterIndex?: number,
     parentZhTitle: string = '',
-    parentEnTitle: string = ''
+    parentEnTitle: string = '',
+    parentTranslator?: string
 ): Promise<ProcessedSection | null> => {
     
     const enName = extractEnNameFromEntry(entry);
@@ -428,9 +429,11 @@ const processContentEntry = async (
     const sectionEn = sectionId ? findSectionById(enData, sectionId) : null;
     const sectionZh = sectionId ? findSectionById(zhData, sectionId) : null;
 
-    // console.log(`[processContentEntry] 处理章节 ${sectionId}|${bookId}:`);
-    // console.log(`[processContentEntry] sectionEn 找到: ${sectionEn !== null}`);
-    // console.log(`[processContentEntry] sectionZh 找到: ${sectionZh !== null}`);
+    // Resolve translator with priority: section data > entry data > parent translator
+    const resolvedTranslator = 
+        sectionEn?.translator || sectionZh?.translator ||
+        entry?.translator ||
+        parentTranslator || undefined;
 
     const finalId = `${sectionId}|${bookId}`;
 
@@ -472,7 +475,8 @@ const processContentEntry = async (
                         zhData,
                         undefined,
                         fullZhTitle,
-                        fullEnTitle
+                        fullEnTitle,
+                        resolvedTranslator
                     );
 
                     if (headerProcessed?.subpageId && header.id) {
@@ -506,7 +510,7 @@ const processContentEntry = async (
         const processedZhContent = processBookTags(zhContent, true);
         const processedEnContent = processBookTags(enContent, false);
 
-        const fileData = {
+        const fileData: any = {
             dataType,
             uid,
             id: finalId,
@@ -523,6 +527,10 @@ const processContentEntry = async (
             zh: processedZhContent,
             en: processedEnContent,
         };
+
+        if (resolvedTranslator) {
+            fileData.translator = resolvedTranslator;
+        }
 
         const preferredFileName = `${escapeFileName(sectionId)}.json`;
         const bookOutputDir = path.join(outputDir, bookType, bookId);
@@ -562,7 +570,11 @@ const processContentEntry = async (
                     outputDir,
                     nameToIdMap,
                     enData,
-                    zhData
+                    zhData,
+                    undefined,
+                    '',
+                    '',
+                    resolvedTranslator
                 );
 
                 if (processedHeader) {
@@ -641,10 +653,15 @@ const writeSectionFile = async (
     outputDir: string,
     enData: any[],
     zhData: any[],
-    chapterIndex?: number
+    chapterIndex?: number,
+    translator?: string
 ) => {
     const sectionEn = sectionId ? findSectionById(enData, sectionId) : null;
     const sectionZh = sectionId ? findSectionById(zhData, sectionId) : null;
+
+    // Resolve translator: section data > passed-in translator
+    const resolvedTranslator = 
+        sectionEn?.translator || sectionZh?.translator || translator || undefined;
 
     const dataType = "text";
     const uid = `${bookType}_${sectionId}|${bookId}`;
@@ -665,7 +682,7 @@ const writeSectionFile = async (
     const processedZhContent = processBookTags(zhContent);
     const processedEnContent = processBookTags(enContent);
 
-    const fileData = {
+    const fileData: any = {
         dataType,
         uid,
         id: finalId,
@@ -681,6 +698,10 @@ const writeSectionFile = async (
         zh: processedZhContent,
         en: processedEnContent,
     };
+
+    if (resolvedTranslator) {
+        fileData.translator = resolvedTranslator;
+    }
 
     const preferredFileName = `${escapeFileName(sectionId)}.json`;
     const bookOutputDir = path.join(outputDir, bookType, bookId);
@@ -770,6 +791,8 @@ const processSingleBook = async (
         contentData.contents = originalData.contents;
     }
 
+    const bookTranslator = originalData?.translator;
+
     for (let chapterIndex = 0; chapterIndex < contentData.contents.length; chapterIndex++) {
         const entry = contentData.contents[chapterIndex];
         const enName = extractEnNameFromEntry(entry);
@@ -780,6 +803,8 @@ const processSingleBook = async (
         if (!sectionId && nameForId) {
             sectionId = nameToIdMap.get(nameForId) || nameToIdMap.get(removeChapterPrefix(nameForId)) || '';
         }
+
+        const entryTranslator = entry?.translator || bookTranslator;
 
         if (sectionId) {
             sectionTextIdMap.addMapping(bookId, sectionId, chapterIndex, enName);
@@ -839,7 +864,8 @@ const processSingleBook = async (
                                 bookContent.zh || [],
                                 chapterIndex,
                                 fullNameZh,
-                                fullNameEn
+                                fullNameEn,
+                                entryTranslator
                             );
                         } else {
                             await processContentEntry(
@@ -852,7 +878,8 @@ const processSingleBook = async (
                                 bookContent.zh || [],
                                 chapterIndex,
                                 fullNameZh,
-                                fullNameEn
+                                fullNameEn,
+                                entryTranslator
                             );
                         }
                     }
@@ -868,7 +895,10 @@ const processSingleBook = async (
                     nameToIdMap,
                     bookContent.en || [],
                     bookContent.zh || [],
-                    chapterIndex
+                    chapterIndex,
+                    '',
+                    '',
+                    entryTranslator
                 );
             } else {
                 const processed = await processContentEntry(
@@ -879,7 +909,10 @@ const processSingleBook = async (
                     nameToIdMap,
                     bookContent.en || [],
                     bookContent.zh || [],
-                    chapterIndex
+                    chapterIndex,
+                    '',
+                    '',
+                    entryTranslator
                 );
 
                 if (processed) {
@@ -895,7 +928,8 @@ const processSingleBook = async (
                         outputDir,
                         bookContent.en || [],
                         bookContent.zh || [],
-                        chapterIndex
+                        chapterIndex,
+                        entryTranslator
                     );
                 }
             }
@@ -914,7 +948,10 @@ const processSingleBook = async (
                             nameToIdMap,
                             bookContent.en || [],
                             bookContent.zh || [],
-                            chapterIndex
+                            chapterIndex,
+                            '',
+                            '',
+                            entryTranslator
                         );
                     } else {
                         const processed = await processContentEntry(
@@ -925,7 +962,10 @@ const processSingleBook = async (
                             nameToIdMap,
                             bookContent.en || [],
                             bookContent.zh || [],
-                            chapterIndex
+                            chapterIndex,
+                            '',
+                            '',
+                            entryTranslator
                         );
 
                         if (processed) {
@@ -941,7 +981,8 @@ const processSingleBook = async (
                                 outputDir,
                                 bookContent.en || [],
                                 bookContent.zh || [],
-                                chapterIndex
+                                chapterIndex,
+                                entryTranslator
                             );
                         }
                     }

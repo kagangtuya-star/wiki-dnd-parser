@@ -642,6 +642,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             Object.assign(item, itemBase);
         }
         
+        item.baserace = superiorRaceName;
         item.superiorfork = buildSuperiorfork({
             superior: superiorId,
             fork: 1,

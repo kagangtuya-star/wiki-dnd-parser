@@ -1,4 +1,4 @@
-﻿﻿﻿﻿import {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import {
     BookContents,
     BookFile,
     BookFileEntry,
@@ -3173,10 +3173,14 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
     }
 
     private getVariantMergeData(item: MagicVariantEntry) {
-        return {
+        const result: Record<string, any> = {
             ...(item.inherits || {}),
             entries: this.getEntries(item),
-        } as Record<string, any>;
+        };
+        if (item.translator) {
+            result.translator = item.translator;
+        }
+        return result;
     }
 
     private getBaseSourcePriority(source?: string): number {
