@@ -9,6 +9,7 @@ import {
     buildReprintMap,
     buildSuperiorfork,
     collectRelatedIds,
+    escapeFileName,
     extractTranslator,
     getDefaultId,
     normalizeReprintedAs,
@@ -154,7 +155,8 @@ const buildEntityBase = (
     applyEntriesHtml(zhOut, logger, id, 'zh');
 
     const translator = extractTranslator(common, enOut, zhOut, zhItem, enItem);
-    appendEnglishShadowFields(zhOut, enOut);
+    // 取消将英文内容添加到 zh 对象中的功能
+    // appendEnglishShadowFields(zhOut, enOut);
 
     const relatedVersions = new Set<string>();
     normalizeReprintedAs(enItem.reprintedAs).forEach(target => relatedVersions.add(target));
@@ -243,13 +245,23 @@ const writeFileOutput = async (
 ) => {
     const outputDir = path.join('./output', dataType);
     await fs.mkdir(outputDir, { recursive: true });
-    const writtenFileNames = new Set<string>();
+    const writtenFileNames = new Map<string, Set<string>>();
 
     for (const item of data) {
-        const baseName = mwUtil.getMwTitle(item.displayName.en || item.displayName.zh || item.id);
-        const preferredFileName = `${dataType}_1_${item.mainSource.source}_1_${baseName}.json`;
+        const sourceId = item.mainSource.source;
+        const sourceDir = path.join(outputDir, sourceId);
+        await fs.mkdir(sourceDir, { recursive: true });
+
+        const baseName = escapeFileName(mwUtil.getMwTitle(item.displayName.en || item.displayName.zh || item.id));
+        const preferredFileName = `${baseName}.json`;
+
+        if (!writtenFileNames.has(sourceId)) {
+            writtenFileNames.set(sourceId, new Set<string>());
+        }
+        const usedNames = writtenFileNames.get(sourceId)!;
+
         const fileName = resolveCaseInsensitiveOutputFileName(
-            writtenFileNames,
+            usedNames,
             preferredFileName,
             item.id
         );
@@ -259,8 +271,34 @@ const writeFileOutput = async (
                 `导出文件名冲突，改用去重文件名：${preferredFileName} -> ${fileName} (${item.id})`
             );
         }
-        await fs.writeFile(path.join(outputDir, fileName), JSON.stringify(item, null, 2), 'utf-8');
+        await fs.writeFile(path.join(sourceDir, fileName), JSON.stringify(item, null, 2), 'utf-8');
     }
+
+    await writeNameListOutput(dataType, data);
+};
+
+const writeNameListOutput = async (
+    dataType: 'class' | 'subclass',
+    data: Record<string, any>[]
+) => {
+    const namelistDir = path.join('./output', 'namelist');
+    await fs.mkdir(namelistDir, { recursive: true });
+    
+    const namelistData = data.map(item => ({
+        id: item.id || '',
+        src: item.mainSource?.source || '',
+        name_en: item.displayName?.en || '',
+        name_zh: item.displayName?.zh || item.displayName?.en || ''
+    }));
+    
+    const output = {
+        type: dataType,
+        data: namelistData
+    };
+    
+    const outputPath = path.join(namelistDir, `${dataType}namelist.json`);
+    await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+    console.log(`已生成 ${dataType}namelist.json 文件：${outputPath}`);
 };
 
 export const runClassProfileExporters = async (deps: ExporterDeps) => {
@@ -362,7 +400,10 @@ export const runClassProfileExporters = async (deps: ExporterDeps) => {
     }
 
     await writeFileOutput('class', classOutput, deps.logger);
+    console.log(`[prepareData] class 完成 (${classOutput.length})`);
+    
     await writeFileOutput('subclass', subclassOutput, deps.logger);
+    console.log(`[prepareData] subclass 完成 (${subclassOutput.length})`);
 
     return {
         class: classOutput.length,

@@ -1,4 +1,4 @@
-import {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import {
     BookContents,
     BookFile,
     BookFileEntry,
@@ -10,7 +10,7 @@ import { promises as fs } from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import chalk from 'chalk';
-import { FeatFile, FeatFileEntry, WikiFeatData } from './types/feat';
+import { FeatFile, FeatFileEntry, WikiFeatData, WikiFeatEntry } from './types/feat';
 import {
     ItemBaseFile,
     ItemFile,
@@ -48,7 +48,6 @@ import {
     SpellFluffFile,
     WikiSpellData,
 } from './types/spells';
-
 import {
     MonsterFile,
     MonsterFileEntry,
@@ -64,8 +63,187 @@ import {
 } from './bestiaryUtils.js';
 import { WikiPageGenerator } from './wikiPageGenerator.js';
 import { genericProfiles } from './exporters/profiles.js';
-import { runGenericProfiles } from './exporters/genericProfileExporter.js';
-import { runClassProfileExporters } from './exporters/classProfileExporter.js';
+import { runGenericFileExporter } from './exporters/genericFileExporter.js';
+import { runAdventureExporter } from './exporters/adventureExporter.js';
+import { runRaceExporter } from './exporters/raceExporter.js';
+import { runBackgroundExporter } from './exporters/backgroundExporter.js';
+import { runHazardExporter } from './exporters/hazardExporter.js';
+import { runTrapExporter } from './exporters/trapExporter.js';
+import { runClassExporter } from './exporters/classExporter.js';
+import { runSpellExporter } from './exporters/spellExporter.js';
+import { runBestiaryExporter } from './exporters/bestiaryExporter.js';
+import { runItemExporter } from './exporters/itemExporter.js';
+import { runFeatExporter } from './exporters/featExporter.js';
+import { escapeFileName, loadSubraceReplacementByNameMap, sectionTextIdMap, SubraceReplacement } from './exporters/shared.js';
+import { generateContents } from './generate-contents.js';
+import { splitBooks } from './split-books.js';
+
+interface InputChangedArray {
+    name: string;
+    type: 'added' | 'modified' | 'removed';
+    count?: number;
+    changedUids?: string[];
+    addedUids?: string[];
+    removedUids?: string[];
+}
+
+interface InputChangedFile {
+    filePath: string;
+    locale: 'zh' | 'en';
+    status: 'added' | 'modified' | 'deleted';
+    changedArrays: InputChangedArray[];
+}
+
+interface InputReplaceLogs {
+    commit: {
+        hash: string;
+        message: string;
+        author: string;
+        date: string;
+    };
+    previousCommit: {
+        hash: string;
+        message: string;
+        author: string;
+        date: string;
+    };
+    changedFiles: InputChangedFile[];
+    generatedAt: string;
+}
+
+interface OutputChangedFile {
+    filePath: string;
+    dataType: string;
+    source: string;
+}
+
+interface OutputReplaceLogs {
+    inputCommit: string;
+    inputCommitMessage: string;
+    changedOutputFiles: OutputChangedFile[];
+    generatedAt: string;
+}
+
+let inputReplaceLogs: InputReplaceLogs | null = null;
+let changedUidsSet: Set<string> | null = null;
+const changedOutputFiles: OutputChangedFile[] = [];
+
+const getCommonParentDir = (path1: string, path2: string): string => {
+    const dir1 = path.dirname(path1);
+    const dir2 = path.dirname(path2);
+    const parts1 = dir1.split(/[\\/]/);
+    const parts2 = dir2.split(/[\\/]/);
+    const commonParts: string[] = [];
+    const minLength = Math.min(parts1.length, parts2.length);
+    for (let i = 0; i < minLength; i++) {
+        if (parts1[i] === parts2[i]) {
+            commonParts.push(parts1[i]);
+        } else {
+            break;
+        }
+    }
+    return commonParts.length > 0 ? commonParts.join('/') : dir1;
+};
+
+const inputArrayToCollectionMap: Record<string, string> = {
+    'items-base.json:itemProperty': 'itemProperty',
+    'items-base.json:itemType': 'itemType',
+    'items-base.json:itemMastery': 'itemMastery',
+    'items-base.json:itemEntry': 'itemEntry',
+    'items-base.json:itemTypeAdditionalEntries': 'itemTypeAdditionalEntries',
+    'books.json:book': 'book',
+    'feats.json:feat': 'feat',
+    'spells.json:spell': 'spell',
+};
+
+const buildChangedUidsSet = (logs: InputReplaceLogs): Set<string> => {
+    const uidSet = new Set<string>();
+    for (const file of logs.changedFiles) {
+        for (const arr of file.changedArrays) {
+            if (arr.changedUids) {
+                for (const uid of arr.changedUids) {
+                    uidSet.add(uid);
+                }
+            }
+            if (arr.addedUids) {
+                for (const uid of arr.addedUids) {
+                    uidSet.add(uid);
+                }
+            }
+            if (arr.removedUids) {
+                for (const uid of arr.removedUids) {
+                    uidSet.add(uid);
+                }
+            }
+            const mapKey = `${file.filePath}:${arr.name}`;
+            const collectionName = inputArrayToCollectionMap[mapKey];
+            if (collectionName) {
+                uidSet.add(`__collection__:${collectionName}`);
+            }
+            if (!arr.changedUids && !arr.addedUids && !arr.removedUids) {
+                uidSet.add(`__file__:${file.filePath}:${arr.name}`);
+            }
+        }
+    }
+    return uidSet;
+};
+
+const loadInputReplaceLogs = async (): Promise<void> => {
+    const commonParentDir = getCommonParentDir(config.DATA_ZH_DIR, config.DATA_EN_DIR);
+    const inputPath = path.join(commonParentDir, 'replace-logs.json');
+    try {
+        const content = await fs.readFile(inputPath, 'utf-8');
+        const parsed = JSON.parse(content) as InputReplaceLogs;
+        inputReplaceLogs = parsed;
+        changedUidsSet = buildChangedUidsSet(parsed);
+        console.log(chalk.cyan(`[prepareData] 已加载 ${inputPath}，检测到 ${parsed.changedFiles.length} 个变更文件，${changedUidsSet.size} 个变更 UID`));
+    } catch {
+        inputReplaceLogs = null;
+        changedUidsSet = null;
+        console.log(chalk.cyan(`[prepareData] 未找到 ${inputPath}，跳过变更跟踪`));
+    }
+};
+
+const isUidChanged = (uid: string): boolean => {
+    if (!inputReplaceLogs || !changedUidsSet) return false;
+    return changedUidsSet.has(uid);
+};
+
+const trackOutputFile = (filePath: string, dataType: string, source: string, uid?: string): void => {
+    if (!inputReplaceLogs) return;
+    
+    if (uid !== undefined && uid !== '__collection__') {
+        if (!isUidChanged(uid)) {
+            return;
+        }
+    } else if (uid === '__collection__') {
+        if (!isUidChanged(`__collection__:${dataType}`)) {
+            return;
+        }
+    }
+    
+    const existingIndex = changedOutputFiles.findIndex(f => f.filePath === filePath);
+    if (existingIndex === -1) {
+        changedOutputFiles.push({ filePath, dataType, source });
+    }
+};
+
+const generateOutputReplaceLogs = async (): Promise<void> => {
+    if (!inputReplaceLogs) return;
+    
+    const outputReplaceLogs: OutputReplaceLogs = {
+        inputCommit: inputReplaceLogs.commit.hash,
+        inputCommitMessage: inputReplaceLogs.commit.message,
+        changedOutputFiles: changedOutputFiles,
+        generatedAt: new Date().toISOString()
+    };
+    
+    const outputPath = path.join('./output', 'replace-logs.json');
+    await fs.writeFile(outputPath, JSON.stringify(outputReplaceLogs, null, 2), 'utf-8');
+    console.log(chalk.cyan(`[prepareData] 已生成 output/replace-logs.json，记录了 ${changedOutputFiles.length} 个输出文件变更`));
+};
+
+const CONFIG_CONTENTS_DIR = './config/contents';
 
 /**
  * 生成图鉴名称列表文件
@@ -164,6 +342,37 @@ async function getLegacySources(parserJsPath: string): Promise<Set<string>> {
  * @param bestiaryMgr BestiaryMgr 实例
  * @param outputDir 输出目录
  */
+async function loadConfigContentsNames(): Promise<Record<string, { zh: string; en: string }>> {
+    const names: Record<string, { zh: string; en: string }> = {};
+    try {
+        const files = await fs.readdir(CONFIG_CONTENTS_DIR);
+        for (const file of files) {
+            if (path.extname(file).toLowerCase() === '.json') {
+                const bookId = path.basename(file, '.json');
+                const filePath = path.join(CONFIG_CONTENTS_DIR, file);
+                try {
+                    let content = await fs.readFile(filePath, 'utf-8');
+                    if (content.charCodeAt(0) === 0xFEFF) {
+                        content = content.slice(1);
+                    }
+                    const data = JSON.parse(content);
+                    if (data.displayName) {
+                        names[bookId] = {
+                            zh: data.displayName.zh || '',
+                            en: data.displayName.en || ''
+                        };
+                    }
+                } catch (err) {
+                    console.warn(`[generateSourcesJson] 读取 ${file} 失败:`, err);
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[generateSourcesJson] 读取 config/contents 目录失败:', err);
+    }
+    return names;
+}
+
 async function generateSourcesJson(
     bookMgr: BookMgr,
     featMgr: FeatMgr,
@@ -172,11 +381,20 @@ async function generateSourcesJson(
     itemMgr: ItemMgr,
     magicVariantMgr: MagicVariantMgr,
     bestiaryMgr: BestiaryMgr,
+    raceData: Record<string, any>[],
+    classData: Record<string, any>[],
+    backgroundData: Record<string, any>[],
+    hazardData: Record<string, any>[],
+    trapData: Record<string, any>[],
+    genericProfileData: Record<string, Record<string, any>[]>,
     outputDir: string
 ) {
     try {
         const enBooks = bookMgr.raw.en?.book || [];
         const zhBooks = bookMgr.raw.zh?.book || [];
+
+        // 从 config/contents 加载书名
+        const configContentsNames = await loadConfigContentsNames();
 
         // 加载 adventures.json
         const adventureFilePath = path.join(config.DATA_ZH_DIR, 'adventures.json');
@@ -198,12 +416,12 @@ async function generateSourcesJson(
         // 收集每个来源包含的类别
         const sourceTypes: Record<string, Set<string>> = {};
 
-        // 初始化每个书籍来源
+        // 初始化每个扩展来源
         for (const enBook of enBooks) {
             sourceTypes[enBook.id] = new Set();
         }
 
-        // 初始化每个冒险来源
+        // 初始化每个模组来源
         for (const adv of enAdventures) {
             sourceTypes[adv.id] = new Set();
         }
@@ -256,35 +474,87 @@ async function generateSourcesJson(
             }
         }
 
+        // 收集种族来源
+        for (const item of raceData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('race');
+            }
+        }
+
+        // 收集职业来源
+        for (const item of classData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('class');
+            }
+        }
+
+        // 收集背景来源
+        for (const item of backgroundData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('background');
+            }
+        }
+
+        // 收集危险来源
+        for (const item of hazardData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('hazard');
+            }
+        }
+
+        // 收集陷阱来源
+        for (const item of trapData) {
+            const sourceId = item.mainSource?.source;
+            if (sourceId && sourceTypes[sourceId]) {
+                sourceTypes[sourceId].add('trap');
+            }
+        }
+
+        // 收集其他通用数据类型来源
+        for (const [dataType, items] of Object.entries(genericProfileData)) {
+            for (const item of items) {
+                const sourceId = item.mainSource?.source;
+                if (sourceId && sourceTypes[sourceId]) {
+                    sourceTypes[sourceId].add(dataType);
+                }
+            }
+        }
+
         const data: Record<string, any> = {};
 
-        // 生成书籍来源数据
+        // 生成扩展来源数据
         for (const enBook of enBooks) {
             const id = enBook.id;
             const zhBook = zhBooks.find(b => b.id === id);
+            const configName = configContentsNames[id];
 
             data[id] = {
                 id: id,
                 src: id,
                 type: 'book',
-                name_en: enBook.name,
+                name_en: configName?.en || enBook.name,
                 source_published: enBook.published || '',
-                name_zh: zhBook ? zhBook.name : enBook.name,
+                name_zh: configName?.zh || (zhBook ? zhBook.name : enBook.name),
                 newest: !legacySources.has(id),
                 have: Array.from(sourceTypes[id] || [])
             };
         }
 
-        // 生成冒险来源数据
+        // 生成模组来源数据
         for (const adv of enAdventures) {
             const id = adv.id;
+            const configName = configContentsNames[id];
 
             data[id] = {
                 id: id,
                 type: 'adventure',
-                name_en: adv.name,
+                name_en: configName?.en || adv.name,
                 source_published: adv.published || '',
-                name_zh: adv.name,
+                name_zh: configName?.zh || adv.name,
                 newest: !legacySources.has(id),
                 have: Array.from(sourceTypes[id] || [])
             };
@@ -522,15 +792,25 @@ const processBonusReplacements = (itemData: any): any => {
 export const createOutputFolders = async (generatePages: boolean) => {
     console.log(`createOutputFolders 被调用，generatePages: ${generatePages}`);
     if (!generatePages) {
-        // npm run start: 只创建 output 目录
+        // npm run start: 创建/清空 output 目录，保留 contents、book、adventure 文件夹
         console.log('创建 output 目录...');
         try {
             await fs.access('./output');
-            await fs.rm('./output', { recursive: true, force: true });
+            // 只删除需要重新生成的文件夹，保留 contents、book、adventure
+            const dirsToClear = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'race', 'class', 'feat'];
+            for (const dir of dirsToClear) {
+                const dirPath = path.join('./output', dir);
+                try {
+                    await fs.access(dirPath);
+                    await fs.rm(dirPath, { recursive: true, force: true });
+                } catch (error) {
+                    // 目录不存在，跳过
+                }
+            }
         } catch (error) {
-            // do nothing, folder does not exist
+            // output 目录不存在，跳过
         }
-        const dirs = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist'];
+        const dirs = ['collection', 'item', 'spell', 'generated', 'bestiary', 'namelist', 'contents', 'book', 'adventure', 'class', 'race', 'feat'];
         for (const dir of dirs) {
             const dirPath = path.join('./output', dir);
             try {
@@ -549,7 +829,7 @@ export const createOutputFolders = async (generatePages: boolean) => {
         } catch (error) {
             // do nothing, folder does not exist
         }
-        const pageDirs = ['spells', 'items', 'bestiary'];
+        const pageDirs = ['法术', '物品', '怪物'];
         for (const dir of pageDirs) {
             const dirPath = path.join('./output_page', dir);
             try {
@@ -1011,7 +1291,7 @@ class BookMgr implements DataMgr<BookFileEntry> {
             const id = this.getId(enBook);
             const zhBook = zh.book.find(b => this.getId(b) === id);
             if (!zhBook) {
-                logger.log('BookMgr', `未找到中文版本的书籍：${enBook.name} (${id})`);
+                logger.log('BookMgr', `未找到中文版本的出版物：${enBook.name} (${id})`);
             }
 
             const bookData: WikiBookData = {
@@ -1037,13 +1317,13 @@ class BookMgr implements DataMgr<BookFileEntry> {
         }
     }
     async generateFiles() {
-        // dertect if there is a './output/collection/bookCollection.json', if yes, delete it
         const outputPath = './output/collection/bookCollection.json';
         const output = {
             type: 'bookCollection',
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/bookCollection.json', 'book', 'collection', '__collection__');
     }
 }
 export const bookMgr = new BookMgr();
@@ -1061,12 +1341,15 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
 
     constructor() { }
     getId(feat: FeatFileEntry): string {
-        return `${feat.name}|${feat.source}`;
+        const name = feat.ENG_name ? feat.ENG_name.trim() : feat.name.trim();
+        return `${name}|${feat.source}`;
     }
     loadData(zh: FeatFile, en: FeatFile) {
         this.raw.zh = zh;
         this.raw.en = en;
         this.db.clear();
+
+        const subraceNameMap = loadSubraceReplacementByNameMap();
 
         idMgr.compare(
             'feat',
@@ -1078,7 +1361,6 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
             }
         );
 
-        // 第一遍：建立 reprintMap
         for (const enFeat of en.feat) {
             const id = this.getId(enFeat);
             const reprintedAs = normalizeReprintedAs(enFeat.reprintedAs);
@@ -1090,60 +1372,156 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
             }
         }
 
-        // 第二遍：生成数据
+        const featMap = new Map<string, FeatFileEntry>();
+        for (const enFeat of en.feat) {
+            featMap.set(this.getId(enFeat), enFeat);
+        }
+        const zhMap = new Map<string, FeatFileEntry>();
+        for (const zhFeat of zh.feat) {
+            zhMap.set(this.getId(zhFeat), zhFeat);
+        }
+        const allIds = new Set<string>([...featMap.keys(), ...zhMap.keys()]);
+        const pairs = [...allIds].map(id => ({
+            en: featMap.get(id) || null,
+            zh: zhMap.get(id) || null,
+        }));
+        const keySets = classifyI18nKeys(pairs, i18nKeyRules);
+
         for (const enFeat of en.feat) {
             const id = this.getId(enFeat);
             const zhFeat = zh.feat.find(f => this.getId(f) === id);
-            if (!zhFeat) {
-                logger.log('FeatMgr', `未找到中文版本的特性：${enFeat.name} (${id})`);
-            }
 
-            // 收集所有相关版本
             const relatedVersions = new Set<string>();
             normalizeReprintedAs(enFeat.reprintedAs).forEach(t => relatedVersions.add(t));
             this.reprintMap.get(id)?.forEach(s => relatedVersions.add(s));
+
+            const split = splitRecordByI18n(enFeat, zhFeat, keySets, {
+                emptyZhValue: '',
+            });
+            const common = { ...split.common };
+            const enOut: WikiFeatEntry = {
+                ...split.en,
+                name: enFeat.name,
+            };
+            const zhOut: WikiFeatEntry = {
+                ...split.zh,
+                name: zhFeat?.name || '',
+            };
+
+            const enEntries = enOut.entries ?? enFeat.entries ?? [];
+            if (Array.isArray(enEntries)) {
+                enOut.entries = enEntries;
+                enOut.html = parseContent(enEntries);
+            } else if (enEntries === '') {
+                enOut.entries = enEntries;
+                enOut.html = '';
+            } else {
+                enOut.entries = [];
+                enOut.html = '';
+            }
+            const zhEntries =
+                zhOut.entries !== undefined
+                    ? zhOut.entries
+                    : zhFeat
+                        ? zhFeat.entries
+                        : [];
+            if (Array.isArray(zhEntries)) {
+                zhOut.entries = zhEntries;
+                zhOut.html = parseContent(zhEntries);
+            } else {
+                zhOut.entries = [];
+                zhOut.html = '';
+            }
+
+            delete common.name;
+            delete common.source;
+            delete common.page;
+
+            const translator = extractTranslator(common, enOut, zhOut, zhFeat, enFeat);
+
+            const allSources = (() => {
+                const sources: { source: string; page: number }[] = [];
+                const seen = new Set<string>();
+                const addSource = (source: string, page: number) => {
+                    if (!source) return;
+                    const key = `${source}|${page}`;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    sources.push({ source, page });
+                };
+                addSource(enFeat.source, enFeat.page || 0);
+                if (enFeat.additionalSources) {
+                    for (const extra of enFeat.additionalSources) {
+                        addSource(extra.source, extra.page || 0);
+                    }
+                }
+                for (const extra of parseReprintedAsSources(enFeat.reprintedAs)) {
+                    addSource(extra.source, extra.page);
+                }
+                return sources;
+            })();
 
             const featData: WikiFeatData = {
                 dataType: 'feat',
                 uid: `feat_${id}`,
                 id: id,
-                mainSource: {
-                    source: enFeat.source,
-                    page: enFeat.page || 0,
-                },
+                ...common,
+                translator,
                 displayName: {
                     zh: zhFeat ? zhFeat.name : null,
                     en: enFeat.name,
                 },
-                allSources: (() => {
-                    const sources: { source: string; page: number }[] = [];
-                    if (enFeat.source) {
-                        sources.push({ source: enFeat.source, page: enFeat.page || 0 });
-                    }
-                    if (enFeat.additionalSources) {
-                        sources.push(...enFeat.additionalSources);
-                    }
-                    sources.push(...parseReprintedAsSources(enFeat.reprintedAs));
-                    return sources;
-                })(),
-                relatedVersions: relatedVersions.size > 0 ? [...relatedVersions] : undefined,
-                zh: zhFeat
-                    ? {
-                        name: zhFeat.name,
-                        entries: zhFeat.entries,
-                        html: parseContent(zhFeat.entries),
-                    }
-                    : null,
-                en: {
-                    name: enFeat.name,
-                    entries: enFeat.entries,
-                    html: parseContent(enFeat.entries),
+                mainSource: {
+                    source: enFeat.source,
+                    page: enFeat.page || 0,
                 },
+                allSources,
+                relatedVersions: relatedVersions.size > 0 ? [...relatedVersions] : undefined,
+                en: enOut,
+                zh: Object.keys(zhOut).length > 0 ? zhOut : null,
             };
+
+            const applySubraceReplacementToPrereq = (prereq: any[], isZh: boolean) => {
+                if (!Array.isArray(prereq)) return;
+                for (const entry of prereq) {
+                    if (!entry || typeof entry !== 'object') continue;
+                    if (Array.isArray(entry.race)) {
+                        for (const raceEntry of entry.race) {
+                            if (raceEntry && typeof raceEntry === 'object' && typeof raceEntry.subrace === 'string') {
+                                const key = isZh ? raceEntry.subrace : raceEntry.subrace.toLowerCase();
+                                const replacement = subraceNameMap.get(key);
+                                if (replacement) {
+                                    raceEntry.subrace = isZh ? replacement.fullName : replacement.fullENGName;
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            const convertLevelObjToClass = (prereq: any[]) => {
+                if (!Array.isArray(prereq)) return;
+                for (const entry of prereq) {
+                    if (!entry || typeof entry !== 'object') continue;
+                    if (entry.level && typeof entry.level === 'object' && entry.level.class && typeof entry.level.class === 'object') {
+                        const levelNum = entry.level.level;
+                        const classObj = entry.level.class;
+                        classObj.level = levelNum;
+                        entry.class = [classObj];
+                        delete entry.level;
+                    }
+                }
+            };
+            if (featData.en?.prerequisite) {
+                applySubraceReplacementToPrereq(featData.en.prerequisite, false);
+                convertLevelObjToClass(featData.en.prerequisite);
+            }
+            if (featData.zh?.prerequisite) {
+                applySubraceReplacementToPrereq(featData.zh.prerequisite, true);
+                convertLevelObjToClass(featData.zh.prerequisite);
+            }
 
             this.db.set(id, featData);
         }
-        // add orphan zh feats to idMgr
     }
 
 
@@ -1155,6 +1533,22 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/featCollection.json', 'feat', 'collection', '__collection__');
+
+        const outputDir = './output/feat';
+        for (const [id, featData] of this.db) {
+            const sourceId = featData.mainSource.source;
+            const sourceDir = path.join(outputDir, sourceId);
+            await fs.mkdir(sourceDir, { recursive: true });
+
+            const baseName = escapeFileName(mwUtil.getMwTitle(
+                featData.displayName.en || featData.displayName.zh || id
+            ));
+            const fileName = `${baseName}.json`;
+            const filePath = path.join(sourceDir, fileName);
+            await fs.writeFile(filePath, JSON.stringify(featData, null, 2), 'utf-8');
+            trackOutputFile(`feat/${sourceId}/${fileName}`, 'feat', sourceId, id);
+        }
     }
 }
 export const featMgr = new FeatMgr();
@@ -1258,6 +1652,7 @@ class ItemPropertyMgr implements DataMgr<ItemProperty> {
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/itemPropertyCollection.json', 'itemProperty', 'collection', '__collection__');
     }
 }
 export const itemPropertyMgr = new ItemPropertyMgr();
@@ -1476,6 +1871,7 @@ class ItemTypeMgr implements DataMgr<ItemType> {
             data: allData,
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/itemTypeCollection.json', 'itemType', 'collection', '__collection__');
     }
 
     // 创建新版或旧版来源的类别副本
@@ -1584,6 +1980,7 @@ class ItemMasteryMgr implements DataMgr<ItemMastery> {
             data: Array.from(this.db.values()),
         };
         await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+        trackOutputFile('collection/itemMasteryCollection.json', 'itemMastery', 'collection', '__collection__');
     }
 }
 export const itemMasteryMgr = new ItemMasteryMgr();
@@ -1907,12 +2304,14 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
                 zhItem as { translator?: string } | undefined,
                 enItem as { translator?: string } | undefined
             );
-            appendEnglishShadowFields(zhOut, enOut);
+            // 取消将英文内容添加到 zh 对象中的功能
+            // appendEnglishShadowFields(zhOut, enOut);
 
             const itemData: WikiItemData = {
                 dataType: 'item',
                 uid: `item_${id}`,
                 id: id,
+                basicRules2024: !!((enItem as any).basicRules2024 || (enItem as any).edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
                 ...common,
                 translator,
                 isBaseItem: true,
@@ -1962,14 +2361,14 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
 
         // for each item in the db, write a file.
         for (const [id, itemData] of this.db) {
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
-            );
+            ));
             const sourceId = itemData.mainSource?.source || 'UNKNOWN';
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
             
-            const fileName = `item_1_${sourceId}_1_${baseName}.json`;
+            const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
 
             // 如果物品没有 type 字段，添加默认值 WI|XDMG
@@ -2027,7 +2426,7 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
             const finalProcessedData = processBonusReplacements(reorderedData);
 
             await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
-            //     console.log(`已生成物品文件：${ filePath } `);
+            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
         }
     }
 
@@ -2243,6 +2642,8 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
 
         // 建立从childId到所有可能parentId列表的映射
         const parentsByChild = new Map<string, string[]>();
+        
+        // 从 itemGroup 中收集 parent-child 关系
         for (const group of en.itemGroup || []) {
             const parentId = this.getId(group);
             for (const childId of group.items || []) {
@@ -2255,6 +2656,24 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
                     parentsByChild.set(processedChildId, []);
                 }
                 parentsByChild.get(processedChildId)!.push(parentId);
+            }
+        }
+        
+        // 从普通 item 中收集 parent-child 关系（处理有 items 字段的物品）
+        for (const item of en.item || []) {
+            if ('items' in item && Array.isArray(item.items)) {
+                const parentId = this.getId(item);
+                for (const childId of item.items) {
+                    // 为没有来源后缀的物品添加|DMG后缀，确保格式一致
+                    let processedChildId = childId;
+                    if (typeof processedChildId === 'string' && !processedChildId.includes('|')) {
+                        processedChildId = `${processedChildId}|DMG`;
+                    }
+                    if (!parentsByChild.has(processedChildId)) {
+                        parentsByChild.set(processedChildId, []);
+                    }
+                    parentsByChild.get(processedChildId)!.push(parentId);
+                }
             }
         }
 
@@ -2425,13 +2844,15 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
                 zhItem as { translator?: string } | undefined,
                 enItem as { translator?: string } | undefined
             );
-            appendEnglishShadowFields(zhOut, enOut);
+            // 取消将英文内容添加到 zh 对象中的功能
+            // appendEnglishShadowFields(zhOut, enOut);
             const superiorfork = buildSuperiorfork({ origin, superior, fork });
 
             const itemData: WikiItemData = {
                 dataType: 'item',
                 uid: `item_${id} `,
                 id: id,
+                basicRules2024: !!((enItem as any).basicRules2024 || (enItem as any).edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
                 ...common,
                 translator,
                 isBaseItem: false,
@@ -2475,20 +2896,40 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
             };
 
             this.db.set(id, itemData);
+            
+            // 如果该物品也是基础物品，更新 baseItemMgr 中的 superiorfork
+            const baseItem = this.baseItems.db.get(id);
+            if (baseItem && superiorfork) {
+                baseItem.superiorfork = superiorfork;
+            }
+        }
+        
+        // 遍历 parentsByChild 映射，更新 baseItemMgr.db 中所有有父物品的基础物品的 superiorfork
+        for (const [childId, parents] of parentsByChild) {
+            const baseItem = this.baseItems.db.get(childId);
+            if (baseItem && !baseItem.superiorfork) {
+                const origin = selectBestParent(parents);
+                const superior = getTopSuperior(childId);
+                const fork = getForkDepth(childId);
+                const superiorfork = buildSuperiorfork({ origin, superior, fork });
+                if (superiorfork) {
+                    baseItem.superiorfork = superiorfork;
+                }
+            }
         }
     }
     async generateFiles() {
         const outputDir = './output/item';
 
         for (const [id, itemData] of this.db) {
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
-            );
+            ));
             const sourceId = itemData.mainSource?.source || 'UNKNOWN';
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
             
-            const fileName = `item_1_${sourceId}_1_${baseName}.json`;
+            const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
 
             // 如果物品没有 type 字段，添加默认值 WI|XDMG
@@ -2591,6 +3032,7 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
             const finalProcessedData = processBonusReplacements(reorderedData);
 
             await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
+            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
         }
     }
 
@@ -2731,10 +3173,14 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
     }
 
     private getVariantMergeData(item: MagicVariantEntry) {
-        return {
+        const result: Record<string, any> = {
             ...(item.inherits || {}),
             entries: this.getEntries(item),
-        } as Record<string, any>;
+        };
+        if (item.translator) {
+            result.translator = item.translator;
+        }
+        return result;
     }
 
     private getBaseSourcePriority(source?: string): number {
@@ -2992,7 +3438,8 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
 
         // 只有非 inherits 相关的文件才添加英文影子字段
         if (!isInheritsBase && !isInheritsDerived) {
-            appendEnglishShadowFields(zhOut, enOut);
+            // 取消将英文内容添加到 zh 对象中的功能
+            // appendEnglishShadowFields(zhOut, enOut);
         }
 
         const superiorfork = buildSuperiorfork(
@@ -3008,6 +3455,7 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
             dataType: 'item',
             uid: `item_${opts.id}`,
             id: opts.id,
+            basicRules2024: !!(enItem.basicRules2024 || enItem.edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
             ...common,
             translator,
             rarity: opts.rarity ?? enItem.rarity,
@@ -3357,14 +3805,14 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
         const outputDir = './output/item';
 
         for (const [id, itemData] of this.db) {
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
-            );
+            ));
             const sourceId = itemData.mainSource?.source || 'UNKNOWN';
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
             
-            const fileName = `item_1_${sourceId}_1_${baseName}.json`;
+            const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
 
             // 如果物品没有 type 字段，添加默认值 WI|XDMG
@@ -3467,6 +3915,7 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
             const finalProcessedData = processBonusReplacements(reorderedData);
 
             await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
+            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
         }
     }
 
@@ -3757,12 +4206,14 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
                 zhOut.html = '';
             }
             const translator = extractTranslator(common, enOut, zhOut, zhSpell, enSpell);
-            appendEnglishShadowFields(zhOut, enOut);
+            // 取消将英文内容添加到 zh 对象中的功能
+            // appendEnglishShadowFields(zhOut, enOut);
 
             const spellData: WikiSpellData = {
                 dataType: 'spell',
                 uid: `spell_${id}`,
                 id: id,
+                basicRules2024: !!((enSpell as any).basicRules2024 || (enSpell as any).edition === 'one' || (typeof enSpell.source === 'string' && enSpell.source.startsWith('X'))),
                 ...common,
                 translator,
                 displayName: {
@@ -3813,12 +4264,13 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 spellData.displayName.en || spellData.displayName.zh || id
-            );
-            const fileName = `Spell_1_${sourceId}_1_${baseName}.json`;
+            ));
+            const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(spellData, null, 2), 'utf-8');
+            trackOutputFile(`spell/${sourceId}/${fileName}`, 'spell', sourceId, id);
         }
     }
 }
@@ -3985,12 +4437,15 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
         const buildAllSources = (ids: string[]) => {
             const sources: { source: string; page: number }[] = [];
             const seen = new Set<string>();
+            const sourceMaxPage = new Map<string, number>();
             const addSource = (source: string, page: number) => {
                 if (!source) return;
                 const key = `${source}|${page}`;
                 if (seen.has(key)) return;
                 seen.add(key);
                 sources.push({ source, page });
+                const prev = sourceMaxPage.get(source) ?? -1;
+                if (page > prev) sourceMaxPage.set(source, page);
             };
 
             for (const relatedId of ids) {
@@ -4008,7 +4463,9 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                     addSource(extra.source, extra.page);
                 }
             }
-            return sources;
+
+            // 移除同一 source 下 page=0 的条目（当该 source 存在非零 page 时）
+            return sources.filter(item => item.page !== 0 || sourceMaxPage.get(item.source) === 0);
         };
 
         for (const enMonster of this.raw.en) {
@@ -4041,6 +4498,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                 dataType: 'bestiary',
                 uid: `bestiary_${id}`,
                 id,
+                basicRules2024: !!(enMonster.basicRules2024 || enMonster.edition === 'one' || (typeof enMonster.source === 'string' && enMonster.source.startsWith('X'))),
                 ...common,
                 referenceSources,
                 translator,
@@ -4107,6 +4565,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                 dataType: 'bestiary',
                 uid: `bestiary_${id}`,
                 id,
+                basicRules2024: !!(typeof source === 'string' && source.startsWith('X')),
                 ...common,
                 referenceSources: [],
                 translator,
@@ -4118,7 +4577,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                     source,
                     page: 0,
                 },
-                allSources: [{ source, page: 0 }],
+                allSources: [],
                 full: {
                     en: fullEn,
                     zh: fullZh,
@@ -4397,7 +4856,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
 
     async generateFiles() {
         const outputDir = './output/bestiary';
-        const writtenFileNames = new Set<string>();
+        const writtenFileNamesBySource = new Map<string, Set<string>>();
 
         for (const [id, bestiaryData] of this.db) {
             // 处理 fluff 数据中的特定格式文本
@@ -4565,14 +5024,18 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
             // 添加 full 字段
             if (full) reorderedData.full = full;
 
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 reorderedData.displayName?.en || reorderedData.displayName?.zh || id
-            );
+            ));
             const sourceId = reorderedData.mainSource?.source || 'UNKNOWN';
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
-            const preferredFileName = `bestiary_1_${sourceId}_1_${baseName}.json`;
+            const preferredFileName = `${baseName}.json`;
+            if (!writtenFileNamesBySource.has(sourceId)) {
+                writtenFileNamesBySource.set(sourceId, new Set<string>());
+            }
+            const writtenFileNames = writtenFileNamesBySource.get(sourceId)!;
             const fileName = resolveCaseInsensitiveOutputFileName(
                 writtenFileNames,
                 preferredFileName,
@@ -4584,6 +5047,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
             this.transformSpellcastingSpells(reorderedData);
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(reorderedData, null, 2), 'utf-8');
+            trackOutputFile(`bestiary/${sourceId}/${fileName}`, 'bestiary', sourceId, id);
         }
     }
 }
@@ -4728,64 +5192,101 @@ let isnavpillIds = new Set<string>();
         printProgress('开始准备数据');
         await createOutputFolders(generatePages);
         printProgress('输出目录已重建');
+        
+        // 加载 input/replace-logs.json
+        await loadInputReplaceLogs();
 
-        // 加载 tbui-nav-pills 配置
-        try {
-            tbuiNavPillsConfig = await readJson(path.join('config', 'tbui-nav-pills.json'));
-            printProgress('tbui-nav-pills 配置已加载');
-        } catch (error) {
-            printProgress('未找到 tbui-nav-pills.json，将跳过 navpills 功能');
+        // 生成出版物目录和分割出版物（仅在非page模式下）
+        let contentsResult = { bookCount: 0, adventureCount: 0, copiedCount: 0 };
+        if (!generatePages) {
+            // 并行执行：生成目录和分割书籍
+            console.log('[prepareData] 开始生成出版物目录和分割扩展/模组...');
+            const [contentsRes, _] = await Promise.all([
+                (async () => {
+                    try {
+                        return await generateContents();
+                    } catch (error) {
+                        console.error('[prepareData] 生成出版物目录失败:', error);
+                        return { bookCount: 0, adventureCount: 0, copiedCount: 0 };
+                    }
+                })(),
+                (async () => {
+                    try {
+                        await splitBooks();
+                    } catch (error) {
+                        console.error('[prepareData] 分割扩展和模组失败:', error);
+                    }
+                })()
+            ]);
+            contentsResult = contentsRes;
+            sectionTextIdMap.printStats();
+            printProgress('目录生成和书籍分割完成');
         }
 
-        const [bookFiles, featFiles, itemBaseFiles, itemFiles, magicVariantFiles, itemFluffFiles] =
-            await Promise.all([
-                loadBilingualFile<BookFile>('books.json'),
-                loadBilingualFile<FeatFile>('feats.json'),
-                loadBilingualFile<ItemBaseFile>('items-base.json'),
-                loadBilingualFile<ItemFile>('items.json'),
-                loadBilingualFile<MagicVariantFile>('magicvariants.json'),
-                loadBilingualFile<ItemFluffFile>('fluff-items.json'),
-            ]);
-        printProgress('基础 JSON 已加载');
-
-        const [spellFiles, spellFluffFiles, bestiaryFiles, bestiaryFluffFiles] = await Promise.all([
-            loadIndexedSpellData(),
-            loadIndexedSpellFluffData(),
-            loadIndexedBestiaryData(),
-            loadIndexedBestiaryFluffData(),
+        // 并行加载配置和数据文件（在分割完成后执行，减少内存压力）
+        const [
+            tbuiConfigResult,
+            bookFiles, 
+            featFiles, 
+            itemBaseFiles, 
+            itemFiles, 
+            magicVariantFiles, 
+            itemFluffFiles,
+            indexedData
+        ] = await Promise.all([
+            (async (): Promise<TbuiNavPillsConfig> => {
+                try {
+                    const config = await readJson(path.join('config', 'tbui-nav-pills.json'));
+                    printProgress('tbui-nav-pills 配置已加载');
+                    return config as TbuiNavPillsConfig;
+                } catch (error) {
+                    printProgress('未找到 tbui-nav-pills.json，将跳过 navpills 功能');
+                    return {};
+                }
+            })(),
+            loadBilingualFile<BookFile>('books.json'),
+            loadBilingualFile<FeatFile>('feats.json'),
+            loadBilingualFile<ItemBaseFile>('items-base.json'),
+            loadBilingualFile<ItemFile>('items.json'),
+            loadBilingualFile<MagicVariantFile>('magicvariants.json'),
+            loadBilingualFile<ItemFluffFile>('fluff-items.json'),
+            (async () => {
+                const [spellFiles, spellFluffFiles, bestiaryFiles, bestiaryFluffFiles] = await Promise.all([
+                    loadIndexedSpellData(),
+                    loadIndexedSpellFluffData(),
+                    loadIndexedBestiaryData(),
+                    loadIndexedBestiaryFluffData(),
+                ]);
+                return { spellFiles, spellFluffFiles, bestiaryFiles, bestiaryFluffFiles };
+            })()
         ]);
+        
+        tbuiNavPillsConfig = tbuiConfigResult;
+        printProgress('基础 JSON 已加载');
+        
         await spellMgr.loadSources(path.join(config.DATA_EN_DIR, 'spells/sources.json'));
-        printProgress(
-            `法术与怪物索引已加载 (spell=${spellFiles.en.spell.length}, bestiary=${bestiaryFiles.en.monster.length})`
-        );
+        printProgress('json 索引已加载');
 
+        // 加载数据到各个管理器
         itemFluffMgr.loadData(itemFluffFiles.zh, itemFluffFiles.en);
-
         bookMgr.loadData(bookFiles.zh, bookFiles.en);
-
         featMgr.loadData(featFiles.zh, featFiles.en);
-
         itemPropertyMgr.loadData(itemBaseFiles.zh, itemBaseFiles.en);
-
         itemTypeMgr.loadData(itemBaseFiles.zh, itemBaseFiles.en);
-        // 注意：itemTypeCollection.json 将在 baseItemMgr 加载完成后生成
-
         itemMasteryMgr.loadData(itemBaseFiles.zh, itemBaseFiles.en);
-
         baseItemMgr.loadData(itemBaseFiles.zh, itemBaseFiles.en);
-
+        
         // 在 baseItemMgr 加载完成后，收集基础物品列表并生成 itemTypeCollection.json
         itemTypeMgr.collectBaseItems(baseItemMgr);
 
         itemMgr.loadData(itemFiles.zh, itemFiles.en);
-
         magicVariantMgr.loadData(magicVariantFiles.zh, magicVariantFiles.en);
 
-        spellMgr.loadFluff(spellFluffFiles.zh, spellFluffFiles.en);
-        spellMgr.loadData(spellFiles.zh, spellFiles.en);
+        spellMgr.loadFluff(indexedData.spellFluffFiles.zh, indexedData.spellFluffFiles.en);
+        spellMgr.loadData(indexedData.spellFiles.zh, indexedData.spellFiles.en);
 
-        bestiaryMgr.loadFluff(bestiaryFluffFiles.zh, bestiaryFluffFiles.en);
-        bestiaryMgr.loadData(bestiaryFiles.zh, bestiaryFiles.en);
+        bestiaryMgr.loadFluff(indexedData.bestiaryFluffFiles.zh, indexedData.bestiaryFluffFiles.en);
+        bestiaryMgr.loadData(indexedData.bestiaryFiles.zh, indexedData.bestiaryFiles.en);
         
         // 统一收集所有需要添加 navpills 和 isnavpill 的 id
         const navpillsUids = new Set(tbuiNavPillsConfig.uids || []);
@@ -4854,39 +5355,94 @@ let isnavpillIds = new Set<string>();
 
         if (!generatePages) {
             // npm run start: 只生成基础数据到 output 目录
-            await bookMgr.generateFiles();
-            printProgress(`book 完成 (${bookMgr.db.size})`);
+            // 并行执行所有输出任务：书籍输出与其他类别 JSON 同时运行
+            const [
+                bookResult,
+                featResult,
+                itemPropertyResult,
+                itemMasteryResult,
+                itemTypeResult,
+                spellResult,
+                bestiaryResult,
+                itemResult,
+                adventureResult,
+                raceResult,
+                backgroundResult,
+                hazardResult,
+                trapResult,
+                classResult
+            ] = await Promise.all([
+                // 书籍输出
+                (async () => {
+                    await bookMgr.generateFiles();
+                    return bookMgr.db.size;
+                })(),
+                // 其他类别输出
+                runFeatExporter(featMgr),
+                (async () => {
+                    await itemPropertyMgr.generateFiles();
+                    return itemPropertyMgr.db.size;
+                })(),
+                (async () => {
+                    await itemMasteryMgr.generateFiles();
+                    return itemMasteryMgr.db.size;
+                })(),
+                (async () => {
+                    await itemTypeMgr.generateFiles();
+                    return itemTypeMgr.db.size;
+                })(),
+                // 独立导出器
+                runSpellExporter(spellMgr),
+                runBestiaryExporter(bestiaryMgr),
+                runItemExporter(baseItemMgr, itemMgr, magicVariantMgr),
+                runAdventureExporter(),
+                runRaceExporter(),
+                runBackgroundExporter(),
+                runHazardExporter(),
+                runTrapExporter(),
+                runClassExporter(),
+            ]);
+            
+            printProgress(`book 完成 (${bookResult})`);
+            printProgress(`feat 完成 (${featResult.count})`);
+            printProgress(`itemProperty 完成 (${itemPropertyResult})`);
+            printProgress(`itemMastery 完成 (${itemMasteryResult})`);
+            printProgress(`itemType 完成 (${itemTypeResult})`);
 
-            await featMgr.generateFiles();
-            printProgress(`feat 完成 (${featMgr.db.size})`);
+            printProgress(`[prepareData] spell 完成 (${spellResult.count})`);
+            printProgress(`[prepareData] bestiary 完成 (${bestiaryResult.count})`);
+            printProgress(`[prepareData] item 完成 (${itemResult.count})`);
+            printProgress(`[prepareData] adventure 完成 (${adventureResult.count})`);
+            printProgress(`[prepareData] race 完成 (${raceResult.count})`);
+            printProgress(`[prepareData] background 完成 (${backgroundResult.count})`);
+            printProgress(`[prepareData] hazard 完成 (${hazardResult.count})`);
+            printProgress(`[prepareData] trap 完成 (${trapResult.count})`);
+            printProgress(`[prepareData] class 完成 (${classResult.classCount})`);
+            printProgress(`[prepareData] subclass 完成 (${classResult.subclassCount})`);
 
-            await itemPropertyMgr.generateFiles();
-            printProgress(`itemProperty 完成 (${itemPropertyMgr.db.size})`);
+            classProfileCounts = { class: classResult.classCount, subclass: classResult.subclassCount };
 
-            await itemMasteryMgr.generateFiles();
-            printProgress(`itemMastery 完成 (${itemMasteryMgr.db.size})`);
+            // 处理其他 genericProfiles
+            const otherGenericProfiles = genericProfiles.filter(p => 
+                !['race', 'background', 'trap', 'hazard'].includes(p.dataType)
+            );
+            let genericProfileData: Record<string, Record<string, any>[]> = {};
+            if (otherGenericProfiles.length > 0) {
+                const genericResult = await runGenericFileExporter(otherGenericProfiles, {
+                    idMgr,
+                    logger,
+                });
+                genericProfileCounts = genericResult.counts;
+                genericProfileData = genericResult.data;
+                for (const [dataType, count] of Object.entries(genericProfileCounts)) {
+                    printProgress(`${dataType} 完成 (${count})`);
+                }
+            }
 
-            await baseItemMgr.generateFiles();
-            printProgress(`baseItem 完成 (${baseItemMgr.db.size})`);
-
-            await itemTypeMgr.generateFiles();
-            printProgress(`itemType 完成 (${itemTypeMgr.db.size})`);
-
-            await itemMgr.generateFiles();
-            printProgress(`item 完成 (${itemMgr.db.size})`);
-
-            await magicVariantMgr.generateFiles();
-            printProgress(`magicVariant 完成 (${magicVariantMgr.db.size})`);
-
-            await spellMgr.generateFiles();
-            printProgress(`spell 完成 (${spellMgr.db.size})`);
-
-            await bestiaryMgr.generateFiles();
-            printProgress(`bestiary 完成 (${bestiaryMgr.db.size})`);
-
+            // 生成 Sources.json
             const namelistDir = path.join('./output', 'namelist');
             await fs.mkdir(namelistDir, { recursive: true });
-
+            const classData = [...classResult.classes, ...classResult.subclasses];
             await generateSourcesJson(
                 bookMgr,
                 featMgr,
@@ -4895,47 +5451,69 @@ let isnavpillIds = new Set<string>();
                 itemMgr,
                 magicVariantMgr,
                 bestiaryMgr,
+                raceResult.data,
+                classData,
+                backgroundResult.data,
+                hazardResult.data,
+                trapResult.data,
+                genericProfileData,
                 namelistDir
-            );
-
-            // 合并所有物品数据（基础物品、普通物品、变体物品）
-            const allItems = [
-                ...Array.from(baseItemMgr.db.values()),
-                ...Array.from(itemMgr.db.values()),
-                ...Array.from(magicVariantMgr.db.values())
-            ];
-            await generateCollectionNameList('item', allItems, namelistDir);
-
-            // 生成法术名称列表
-            await generateCollectionNameList('spell', Array.from(spellMgr.db.values()), namelistDir);
-
-            // 生成怪物名称列表
-            await generateCollectionNameList('bestiary', Array.from(bestiaryMgr.db.values()), namelistDir);
-
-            genericProfileCounts = await runGenericProfiles(genericProfiles, {
-                idMgr,
-                logger,
-            });
-            printProgress(
-                `genericProfile 完成 (${Object.entries(genericProfileCounts)
-                    .map(([dataType, count]) => `${dataType}=${count}`)
-                    .join(', ')})`
-            );
-
-            classProfileCounts = await runClassProfileExporters({
-                idMgr,
-                logger,
-            });
-            printProgress(
-                `classProfile 完成 (class=${classProfileCounts.class}, subclass=${classProfileCounts.subclass})`
             );
 
             await idMgr.generateFiles();
             await tagParser.generateFiles();
             await logger.generateFile();
             await processGeneratedFiles();
+            
+            // 生成 output/replace-logs.json
+            await generateOutputReplaceLogs();
         } else {
             // npm run page: 只生成 wiki 页面到 output_page 目录
+            // 先加载 class 数据
+            const classResult = await runClassExporter();
+            
+            // 合并主职业和子职业数据
+            const classMap = new Map<string, any>();
+            for (const cls of classResult.classes) {
+                classMap.set(cls.id, cls);
+            }
+            for (const sub of classResult.subclasses) {
+                classMap.set(sub.id, sub);
+            }
+
+            // 加载种族数据
+            await runRaceExporter();
+            
+            const raceMap = new Map<string, any>();
+            const raceDir = path.join('./output', 'race');
+            if (await fs.access(raceDir).then(() => true).catch(() => false)) {
+                const races = await fs.readdir(raceDir);
+                for (const raceName of races) {
+                    const racePath = path.join(raceDir, raceName);
+                    if ((await fs.stat(racePath)).isDirectory()) {
+                        const sources = await fs.readdir(racePath);
+                        for (const source of sources) {
+                            const sourcePath = path.join(racePath, source);
+                            if ((await fs.stat(sourcePath)).isDirectory()) {
+                                const files = await fs.readdir(sourcePath);
+                                for (const file of files) {
+                                    if (file.endsWith('.json')) {
+                                        const filePath = path.join(sourcePath, file);
+                                        const content = await fs.readFile(filePath, 'utf-8');
+                                        try {
+                                            const raceData = JSON.parse(content);
+                                            raceMap.set(raceData.id, raceData);
+                                        } catch (err) {
+                                            console.warn(`[prepareData] 读取种族文件失败: ${filePath}`, err);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
             const wikiPageGenerator = new WikiPageGenerator({
                 books: bookFiles,
                 spells: spellMgr.db,
@@ -4943,20 +5521,37 @@ let isnavpillIds = new Set<string>();
                 items: itemMgr.db,
                 magicVariants: magicVariantMgr.db,
                 bestiary: bestiaryMgr.db,
+                classes: classMap,
+                races: raceMap,
                 logger: message => printProgress(`wikiPage: ${message}`),
             });
             const wikiPageResult = await wikiPageGenerator.generateAll();
             printProgress(
-                `wikiPage 完成 (spellFiles=${wikiPageResult.spellFiles}, itemFiles=${wikiPageResult.itemFiles}, bestiaryFiles=${wikiPageResult.bestiaryFiles}, failed=${wikiPageResult.failed}, skippedSelfRedirects=${wikiPageResult.skippedSelfRedirects}, pageConflicts=${wikiPageResult.pageConflicts})`
+                `wikiPage 完成 (spellFiles=${wikiPageResult.spellFiles}, itemFiles=${wikiPageResult.itemFiles}, bestiaryFiles=${wikiPageResult.bestiaryFiles}, classFiles=${wikiPageResult.classFiles}, raceFiles=${wikiPageResult.raceFiles}, failed=${wikiPageResult.failed}, skippedSelfRedirects=${wikiPageResult.skippedSelfRedirects}, pageConflicts=${wikiPageResult.pageConflicts})`
             );
+
+            const wikiPageMapPath = './output/_json-page-wiki.json';
+            await fs.writeFile(wikiPageMapPath, JSON.stringify(wikiPageGenerator.pageJsonMap, null, 2), 'utf-8');
+            printProgress(`已生成 ${wikiPageMapPath}，记录了 ${wikiPageGenerator.pageJsonMap.length} 个页面映射`);
         }
 
         const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(2);
-        console.log(
-            chalk.green(
-                `[prepareData] 完成，用时 ${elapsedSec}s，输出: book=${bookMgr.db.size}, feat=${featMgr.db.size}, item(base=${baseItemMgr.db.size}, normal=${itemMgr.db.size}, variant=${magicVariantMgr.db.size}), spell=${spellMgr.db.size}, bestiary=${bestiaryMgr.db.size}, genericProfiles=${Object.values(genericProfileCounts).reduce((sum, count) => sum + count, 0)}, class=${classProfileCounts.class}, subclass=${classProfileCounts.subclass}`
-            )
-        );
+        const baseOutput = `book=${bookMgr.db.size}, feat=${featMgr.db.size}, item(base=${baseItemMgr.db.size}, normal=${itemMgr.db.size}, variant=${magicVariantMgr.db.size}), spell=${spellMgr.db.size}, bestiary=${bestiaryMgr.db.size}, genericProfiles=${Object.values(genericProfileCounts).reduce((sum, count) => sum + count, 0)}, class=${classProfileCounts.class}, subclass=${classProfileCounts.subclass}`;
+        const contentsOutput = `contents(book=${contentsResult.bookCount}, adventure=${contentsResult.adventureCount}, copied=${contentsResult.copiedCount})`;
+        
+        if (generatePages) {
+            console.log(
+                chalk.green(
+                    `[prepareData] 完成，用时 ${elapsedSec}s，输出: ${baseOutput}`
+                )
+            );
+        } else {
+            console.log(
+                chalk.green(
+                    `[prepareData] 完成，用时 ${elapsedSec}s，输出: ${contentsOutput}, ${baseOutput}`
+                )
+            );
+        }
     } catch (error) {
         console.error(chalk.red('[prepareData] 执行失败'), error);
         process.exitCode = 1;
@@ -4978,7 +5573,7 @@ async function processGeneratedFiles() {
         return;
     }
     const jsonEnFiles = enFiles.filter(file => file.endsWith('.json'));
-
+    
     // 读取中文generated文件夹中的文件
     let zhFiles;
     try {
@@ -4988,6 +5583,10 @@ async function processGeneratedFiles() {
         return;
     }
     const jsonZhFiles = zhFiles.filter(file => file.endsWith('.json'));
+
+    // 收集中英文表格数据
+    let enTables: any[] = [];
+    let zhTables: any[] = [];
 
     // 处理英文JSON文件
     for (const file of jsonEnFiles) {
@@ -4999,7 +5598,7 @@ async function processGeneratedFiles() {
             
             // 特殊处理 gendata-tables.json 文件
             if (file === 'gendata-tables.json' && parsedData.table && Array.isArray(parsedData.table)) {
-                await processTablesFile(parsedData.table, 'en');
+                enTables = parsedData.table;
             } else {
                 // 普通文件处理
                 const outputPath = path.join(outputDir, `${path.parse(file).name}-en.json`);
@@ -5021,7 +5620,7 @@ async function processGeneratedFiles() {
             
             // 特殊处理 gendata-tables.json 文件
             if (file === 'gendata-tables.json' && parsedData.table && Array.isArray(parsedData.table)) {
-                await processTablesFile(parsedData.table, 'zh');
+                zhTables = parsedData.table;
             } else {
                 // 普通文件处理
                 const outputPath = path.join(outputDir, file);
@@ -5033,41 +5632,94 @@ async function processGeneratedFiles() {
         }
     }
 
+    // 统一处理表格数据
+    if (enTables.length > 0 || zhTables.length > 0) {
+        await processTablesFile(enTables, zhTables);
+    }
+
     printProgress('generated 文件夹处理完成');
 }
 
 // 处理表格文件，将表格按照 source 和 name 分割输出
-async function processTablesFile(tables: any[], language: 'en' | 'zh') {
-    const tablesOutputDir = path.join('./output', 'generated', 'tables', language);
+async function processTablesFile(enTables: any[], zhTables: any[]) {
+    const tablesOutputDir = path.join('./output', 'tables');
     await fs.mkdir(tablesOutputDir, { recursive: true });
     
-    for (const table of tables) {
+    // console.log(`处理表格: 英文${enTables.length}个, 中文${zhTables.length}个`);
+    
+    // 处理英文表格
+    for (const table of enTables) {
         if (!table.source || !table.name) {
-            console.warn('表格缺少source或name字段，跳过:', table);
+            console.warn('英文表格缺少source或name字段，跳过:', table);
             continue;
         }
         
-        // 清理文件名中的非法字符
-        const sanitizeFileName = (name: string): string => {
-            // Windows非法字符: < > : " / \ | ? *
-            return name.replace(/[<>:"/\\|?*]/g, '_');
-        };
+        // 生成文件名：表格名.json
+        const safeName = escapeFileName(table.name);
+        const fileName = `${safeName}.json`;
         
-        // 生成文件名：tables_1_来源_1_表格名.json
-        const safeName = sanitizeFileName(table.name);
-        const fileName = `tables_1_${table.source}_1_${safeName}.json`;
-        const outputPath = path.join(tablesOutputDir, fileName);
+        // 创建来源文件夹
+        const sourceDir = path.join(tablesOutputDir, table.source);
+        await fs.mkdir(sourceDir, { recursive: true });
+        
+        const outputPath = path.join(sourceDir, fileName);
         
         try {
-            // 添加 dataType 字段
-            const tableWithDataType = {
+            // 创建新格式的数据
+            const newData = {
                 dataType: 'table',
+                displayName: {
+                    en: table.name,
+                    zh: ''
+                },
                 ...table
             };
-            const formattedData = JSON.stringify(tableWithDataType, null, 2);
+            // 删除原始 name 字段
+            delete newData.name;
+            
+            const formattedData = JSON.stringify(newData, null, 2);
             await fs.writeFile(outputPath, formattedData, 'utf-8');
         } catch (error) {
-            console.error(`处理表格失败: ${fileName}`, error);
+            console.error(`处理英文表格失败: ${fileName}`, error);
         }
     }
+    
+    // 处理中文表格
+    for (const table of zhTables) {
+        if (!table.source || !table.name) {
+            console.warn('中文表格缺少source或name字段，跳过:', table);
+            continue;
+        }
+        
+        // 生成文件名：表格名.json
+        const safeName = escapeFileName(table.name);
+        const fileName = `${safeName}.json`;
+        
+        // 创建来源文件夹
+        const sourceDir = path.join(tablesOutputDir, table.source);
+        await fs.mkdir(sourceDir, { recursive: true });
+        
+        const outputPath = path.join(sourceDir, fileName);
+        
+        try {
+            // 创建新格式的数据
+            const newData = {
+                dataType: 'table',
+                displayName: {
+                    en: '',
+                    zh: table.name
+                },
+                ...table
+            };
+            // 删除原始 name 字段
+            delete newData.name;
+            
+            const formattedData = JSON.stringify(newData, null, 2);
+            await fs.writeFile(outputPath, formattedData, 'utf-8');
+        } catch (error) {
+            console.error(`处理中文表格失败: ${fileName}`, error);
+        }
+    }
+    
+    // console.log(`表格处理完成`);
 }

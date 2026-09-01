@@ -4,6 +4,336 @@ import path from 'path';
 import config from './config.js';
 import { resolveCopiesInBothDirectories } from './copyResolver.js';
 
+interface ChangedArray {
+    name: string;
+    type: 'added' | 'modified' | 'removed';
+    count?: number;
+    changedUids?: string[];
+    addedUids?: string[];
+    removedUids?: string[];
+}
+
+interface ChangedFile {
+    filePath: string;
+    locale: 'zh' | 'en';
+    status: 'added' | 'modified' | 'deleted';
+    changedArrays: ChangedArray[];
+}
+
+interface CommitInfo {
+    hash: string;
+    message: string;
+    author: string;
+    date: string;
+}
+
+const getItemUid = (item: any, arrayName: string): string | null => {
+    if (!item || typeof item !== 'object') return null;
+    
+    if (item.id !== undefined) {
+        return String(item.id);
+    }
+    
+    const nameField = item.ENG_name || item.name;
+    const sourceField = item.source;
+    if (nameField && sourceField) {
+        return `${String(nameField).trim()}|${String(sourceField)}`;
+    }
+    
+    if (nameField && item.page !== undefined) {
+        return `${String(nameField).trim()}|${item.page}`;
+    }
+    
+    if (item.name && item.abbreviation) {
+        return `${String(item.name).trim()}|${String(item.abbreviation)}`;
+    }
+    
+    return null;
+};
+
+const analyzeJsonDiff = (oldContent: string, newContent: string): ChangedArray[] => {
+    const changedArrays: ChangedArray[] = [];
+    try {
+        const oldJson = JSON.parse(oldContent);
+        const newJson = JSON.parse(newContent);
+        
+        const compareArrays = (oldArr: any[], newArr: any[], arrayName: string): ChangedArray | null => {
+            const oldUidMap = new Map<string, any>();
+            const newUidMap = new Map<string, any>();
+            const oldNoUid: any[] = [];
+            const newNoUid: any[] = [];
+            
+            for (const item of oldArr) {
+                const uid = getItemUid(item, arrayName);
+                if (uid !== null) {
+                    oldUidMap.set(uid, item);
+                } else {
+                    oldNoUid.push(item);
+                }
+            }
+            
+            for (const item of newArr) {
+                const uid = getItemUid(item, arrayName);
+                if (uid !== null) {
+                    newUidMap.set(uid, item);
+                } else {
+                    newNoUid.push(item);
+                }
+            }
+            
+            const addedUids: string[] = [];
+            const removedUids: string[] = [];
+            const modifiedUids: string[] = [];
+            
+            for (const [uid, newItem] of newUidMap) {
+                if (!oldUidMap.has(uid)) {
+                    addedUids.push(uid);
+                } else {
+                    const oldItem = oldUidMap.get(uid);
+                    if (JSON.stringify(oldItem) !== JSON.stringify(newItem)) {
+                        modifiedUids.push(uid);
+                    }
+                }
+            }
+            
+            for (const [uid] of oldUidMap) {
+                if (!newUidMap.has(uid)) {
+                    removedUids.push(uid);
+                }
+            }
+            
+            const noUidChanged = JSON.stringify(oldNoUid) !== JSON.stringify(newNoUid);
+            
+            if (addedUids.length === 0 && removedUids.length === 0 && modifiedUids.length === 0 && !noUidChanged) {
+                return null;
+            }
+            
+            let type: 'added' | 'modified' | 'removed' = 'modified';
+            const countDiff = newArr.length - oldArr.length;
+            if (countDiff > 0 && modifiedUids.length === 0 && removedUids.length === 0) {
+                type = 'added';
+            } else if (countDiff < 0 && modifiedUids.length === 0 && addedUids.length === 0) {
+                type = 'removed';
+            }
+            
+            const result: ChangedArray = {
+                name: arrayName,
+                type,
+                count: newArr.length
+            };
+            
+            if (addedUids.length > 0) {
+                result.addedUids = addedUids;
+            }
+            if (removedUids.length > 0) {
+                result.removedUids = removedUids;
+            }
+            if (modifiedUids.length > 0) {
+                result.changedUids = modifiedUids;
+            }
+            
+            return result;
+        };
+        
+        const compareObjects = (obj1: any, obj2: any, prefix: string = '') => {
+            const keys1 = new Set(Object.keys(obj1));
+            const keys2 = new Set(Object.keys(obj2));
+            
+            for (const key of keys2) {
+                const fullKey = prefix ? `${prefix}.${key}` : key;
+                const val1 = obj1[key];
+                const val2 = obj2[key];
+                
+                if (Array.isArray(val2)) {
+                    if (Array.isArray(val1)) {
+                        const diffResult = compareArrays(val1, val2, fullKey);
+                        if (diffResult) {
+                            changedArrays.push(diffResult);
+                        }
+                    } else {
+                        const uids: string[] = [];
+                        for (const item of val2) {
+                            const uid = getItemUid(item, fullKey);
+                            if (uid !== null) uids.push(uid);
+                        }
+                        changedArrays.push({
+                            name: fullKey,
+                            type: 'added',
+                            count: val2.length,
+                            addedUids: uids.length > 0 ? uids : undefined
+                        });
+                    }
+                } else if (typeof val2 === 'object' && val2 !== null && !Array.isArray(val2) && key !== '_meta') {
+                    compareObjects(val1 || {}, val2, fullKey);
+                }
+            }
+            
+            for (const key of keys1) {
+                const fullKey = prefix ? `${prefix}.${key}` : key;
+                if (!keys2.has(key)) {
+                    const val1 = obj1[key];
+                    if (Array.isArray(val1)) {
+                        const uids: string[] = [];
+                        for (const item of val1) {
+                            const uid = getItemUid(item, fullKey);
+                            if (uid !== null) uids.push(uid);
+                        }
+                        changedArrays.push({
+                            name: fullKey,
+                            type: 'removed',
+                            count: 0,
+                            removedUids: uids.length > 0 ? uids : undefined
+                        });
+                    }
+                }
+            }
+        };
+        
+        compareObjects(oldJson, newJson);
+    } catch {
+        changedArrays.push({
+            name: 'content',
+            type: 'modified'
+        });
+    }
+    
+    return changedArrays;
+};
+
+const getCommitInfo = (commitHash: string, repoDir: string): CommitInfo => {
+    try {
+        const result = execSync(`git show ${commitHash} --format='%H||%s||%an||%ad' --date=iso-strict`, {
+            cwd: repoDir,
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
+        
+        const [hash, message, author, date] = result.split('||');
+        return {
+            hash: hash.trim(),
+            message: message.trim(),
+            author: author.trim(),
+            date: date.trim()
+        };
+    } catch {
+        return {
+            hash: commitHash,
+            message: 'Unknown',
+            author: 'Unknown',
+            date: 'Unknown'
+        };
+    }
+};
+
+const getCommonParentDir = (path1: string, path2: string): string => {
+    const dir1 = path.dirname(path1);
+    const dir2 = path.dirname(path2);
+    const parts1 = dir1.split(/[\\/]/);
+    const parts2 = dir2.split(/[\\/]/);
+    const commonParts: string[] = [];
+    const minLength = Math.min(parts1.length, parts2.length);
+    for (let i = 0; i < minLength; i++) {
+        if (parts1[i] === parts2[i]) {
+            commonParts.push(parts1[i]);
+        } else {
+            break;
+        }
+    }
+    return commonParts.length > 0 ? commonParts.join('/') : dir1;
+};
+
+const generateReplaceLogs = async (repoDir: string, zhDir: string, enDir: string) => {
+    const replaceLogs: {
+        commit: CommitInfo;
+        previousCommit: CommitInfo;
+        changedFiles: ChangedFile[];
+        generatedAt: string;
+    } = {
+        commit: { hash: '', message: '', author: '', date: '' },
+        previousCommit: { hash: '', message: '', author: '', date: '' },
+        changedFiles: [],
+        generatedAt: new Date().toISOString()
+    };
+    
+    try {
+        const latestCommit = execSync('git rev-parse HEAD', {
+            cwd: repoDir,
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
+        
+        const previousCommit = execSync('git rev-parse HEAD~1', {
+            cwd: repoDir,
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
+        
+        replaceLogs.commit = getCommitInfo(latestCommit, repoDir);
+        replaceLogs.previousCommit = getCommitInfo(previousCommit, repoDir);
+        
+        const diffOutput = execSync(`git diff ${previousCommit} ${latestCommit} --name-status`, {
+            cwd: repoDir,
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+        
+        const lines = diffOutput.trim().split('\n');
+        
+        for (const line of lines) {
+            const [status, filePath] = line.split('\t');
+            if (!filePath) continue;
+            
+            const jsonMatch = filePath.match(/(data|data-bak)\/(.+\.json)/);
+            if (!jsonMatch) continue;
+            
+            const locale = jsonMatch[1] === 'data' ? 'zh' : 'en';
+            
+            let changedArrays: ChangedArray[] = [];
+            
+            if (status !== 'D') {
+                try {
+                    const newContent = await fs.readFile(path.join(repoDir, filePath), 'utf-8');
+                    let oldContent = '';
+                    if (status !== 'A') {
+                        try {
+                            oldContent = execSync(`git show ${previousCommit}:${filePath}`, {
+                                cwd: repoDir,
+                                encoding: 'utf-8',
+                                stdio: ['ignore', 'pipe', 'ignore']
+                            }).trim();
+                        } catch {
+                            oldContent = '';
+                        }
+                    }
+                    const changedArraysResult = analyzeJsonDiff(oldContent, newContent);
+                    changedArrays = changedArraysResult;
+                } catch {
+                    changedArrays = [{ name: 'content', type: 'modified' }];
+                }
+            }
+            
+            let fileStatus: 'added' | 'modified' | 'deleted' = 'modified';
+            if (status === 'A') fileStatus = 'added';
+            if (status === 'D') fileStatus = 'deleted';
+            
+            replaceLogs.changedFiles.push({
+                filePath: jsonMatch[2],
+                locale,
+                status: fileStatus,
+                changedArrays
+            });
+        }
+    } catch (error) {
+        console.warn(`[${getTimestamp()}] 生成 replace-logs.json 失败:`, error);
+    }
+    
+    const commonParentDir = getCommonParentDir(zhDir, enDir);
+    const outputPath = path.join(commonParentDir, 'replace-logs.json');
+    await fs.mkdir(commonParentDir, { recursive: true });
+    await fs.writeFile(outputPath, JSON.stringify(replaceLogs, null, 2), 'utf-8');
+    console.log(`[${getTimestamp()}] 已生成 replace-logs.json: ${outputPath}`);
+};
+
 const getTimestamp = () => {
     const now = new Date();
     return now.toTimeString().split(' ')[0]; // HH:MM:SS
@@ -178,11 +508,11 @@ const getRepoData = async (
         await safeRmdir(tempDir);
 
         console.log(`[${getTimestamp()}] 开始克隆仓库...`);
-        // 直接克隆整个仓库，确保获取所有文件
+        // 使用 --depth 2 来获取最近两次提交，以便比较差异
         const cloneArgs = [
             'clone',
             '--depth',
-            '1',
+            '2',
             ...(branch ? ['--branch', branch] : []),
             repoUrl,
             tempDir,
@@ -190,6 +520,10 @@ const getRepoData = async (
         console.log(`[${getTimestamp()}] 执行: git ${cloneArgs.join(' ')}`);
         execSync(`git ${cloneArgs.join(' ')}`, execOptions);
         console.log(`[${getTimestamp()}] 克隆完成！`);
+        
+        // 生成 replace-logs.json
+        console.log(`[${getTimestamp()}] 生成 replace-logs.json...`);
+        await generateReplaceLogs(tempDir, config.DATA_ZH_DIR, config.DATA_EN_DIR);
         
         // 检查目录结构
         const tempContent = await fs.readdir(tempDir, { withFileTypes: true });
@@ -307,19 +641,30 @@ const getRepoData = async (
         en: enRoot,
     });
     
+    const zhDataPath = path.join(zhRoot, 'data');
+    const enDataPath = path.join(enRoot, 'data');
+    
+    const zhDataExists = await fs.access(zhDataPath).then(() => true).catch(() => false);
+    const enDataExists = await fs.access(enDataPath).then(() => true).catch(() => false);
+    
+    if (!zhDataExists || !enDataExists) {
+        console.error(`[${getTimestamp()}] 错误: 数据目录不存在，无法继续处理 _copy 引用`);
+        console.error(`[${getTimestamp()}]   - zh/data: ${zhDataExists ? '存在' : '不存在'}`);
+        console.error(`[${getTimestamp()}]   - en/data: ${enDataExists ? '存在' : '不存在'}`);
+        process.exit(1);
+    }
+    
     console.log(`[${getTimestamp()}] 开始处理 _copy 引用...`);
-    // console.log(`[${getTimestamp()}] EN Path: ${path.join(enRoot, 'data')}`);
-    // console.log(`[${getTimestamp()}] ZH Path: ${path.join(zhRoot, 'data')}`);
     
     await resolveCopiesInBothDirectories(
-        path.join(enRoot, 'data'),
-        path.join(zhRoot, 'data'),
-        path.join(enRoot, 'data'),
-        path.join(zhRoot, 'data')
+        enDataPath,
+        zhDataPath,
+        enDataPath,
+        zhDataPath
     );
     
     // 验证处理结果
-    const zhBestiaryPath = path.join(zhRoot, 'data', 'bestiary', 'bestiary-lox.json');
+    const zhBestiaryPath = path.join(zhDataPath, 'bestiary', 'bestiary-lox.json');
     const zhContent = await fs.readFile(zhBestiaryPath, 'utf-8');
     const zhCopyCount = (zhContent.match(/_copy/g) || []).length;
     // console.log(`[${getTimestamp()}] 处理后 bestiary-lox.json 中 _copy 的数量: ${zhCopyCount}`);

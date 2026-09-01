@@ -5,13 +5,13 @@ import { parseContent } from '../contentGen.js';
 import type { ExportProfile } from './profileTypes.js';
 import { buildFluffStore } from './fluff.js';
 import {
-    appendEnglishShadowFields,
     buildAllSources,
     buildReprintMap,
     collectRelatedIds,
     escapeFileName,
     extractTranslator,
     getDefaultId,
+    hasLocalizedDifference,
     normalizeReprintedAs,
     resolveCaseInsensitiveOutputFileName,
     splitStructuredRecordByDiff,
@@ -31,11 +31,6 @@ type IdMgrLike = {
             getEnTitle: (item: T) => string | null;
         }
     ) => void;
-};
-
-type GenericExporterDeps = {
-    idMgr: IdMgrLike;
-    logger: LoggerLike;
 };
 
 const readJson = async <T>(filePath: string): Promise<T> => {
@@ -101,7 +96,7 @@ const applyEntriesHtml = (
         }
     } catch (error) {
         logger.log(
-            'GenericProfileExporter',
+            'GenericFileExporter',
             `${dataType}:${id}:${locale} 生成 html 失败，保留原始 entries`
         );
     }
@@ -124,7 +119,7 @@ const writeFileOutput = async (
     logger: LoggerLike
 ) => {
     if (!profile.dataType) {
-        logger.log('GenericProfileExporter', `缺少 dataType，跳过文件输出: ${JSON.stringify(profile)}`);
+        logger.log('GenericFileExporter', `缺少 dataType，跳过文件输出: ${JSON.stringify(profile)}`);
         return;
     }
     const outputDir = path.join('./output', profile.dataType);
@@ -134,7 +129,7 @@ const writeFileOutput = async (
     for (const item of data) {
         const sourceId = item.mainSource?.source;
         if (!sourceId) {
-            logger.log('GenericProfileExporter', `缺少 source，跳过条目: ${item.id || item.displayName?.en} (${profile.dataType})`);
+            logger.log('GenericFileExporter', `缺少 source，跳过条目: ${item.id || item.displayName?.en} (${profile.dataType})`);
             continue;
         }
         const sourceDir = path.join(outputDir, sourceId);
@@ -156,29 +151,13 @@ const writeFileOutput = async (
         
         if (fileName !== preferredFileName) {
             logger.log(
-                'GenericProfileExporter',
+                'GenericFileExporter',
                 `导出文件名冲突，改用去重文件名：${preferredFileName} -> ${fileName} (${item.id})`
             );
         }
         const filePath = path.join(sourceDir, fileName);
         await fs.writeFile(filePath, JSON.stringify(item, null, 2), 'utf-8');
     }
-};
-
-const writeCollectionOutput = async (profile: ExportProfile, data: Record<string, any>[]) => {
-    const outputPath = path.join('./output', 'collection', `${profile.dataType}Collection.json`);
-    await fs.writeFile(
-        outputPath,
-        JSON.stringify(
-            {
-                type: `${profile.dataType}Collection`,
-                data,
-            },
-            null,
-            2
-        ),
-        'utf-8'
-    );
 };
 
 const writeNameListOutput = async (profile: ExportProfile, data: Record<string, any>[]) => {
@@ -226,8 +205,6 @@ const buildEntity = (
     applyEntriesHtml(zhOut, logger, profile.dataType, id, 'zh');
 
     const translator = extractTranslator(common, enOut, zhOut, zhItem, enItem);
-    // 取消将英文内容添加到 zh 对象中的功能
-    // appendEnglishShadowFields(zhOut, enOut);
 
     const relatedVersions = new Set<string>();
     normalizeReprintedAs(enItem.reprintedAs).forEach(target => relatedVersions.add(target));
@@ -254,11 +231,31 @@ const buildEntity = (
     };
 };
 
+const collectDiffKeys = (
+    enEntries: Record<string, any>[],
+    zhMap: Map<string, Record<string, any>>
+): Set<string> => {
+    const diffKeys = new Set<string>();
+    for (const enItem of enEntries) {
+        const id = getDefaultId(enItem);
+        const zhItem = zhMap.get(id);
+        if (!zhItem) continue;
+        const keys = new Set([...Object.keys(enItem), ...Object.keys(zhItem)]);
+        for (const key of keys) {
+            if (diffKeys.has(key)) continue;
+            if (hasLocalizedDifference(enItem[key], zhItem[key])) {
+                diffKeys.add(key);
+            }
+        }
+    }
+    return diffKeys;
+};
+
 const runSingleProfile = async (
     profile: ExportProfile,
-    deps: GenericExporterDeps,
+    deps: { idMgr: IdMgrLike; logger: LoggerLike },
     fileCache: Map<string, { en: Record<string, any>; zh: Record<string, any> }>
-) => {
+): Promise<Record<string, any>[]> => {
     const bilingual = await loadBilingualFileCached(profile.sourceFile, fileCache);
     const enRawEntries = getRootEntries(bilingual.en, profile.rootKey);
     const zhRawEntries = getRootEntries(bilingual.zh, profile.rootKey);
@@ -282,81 +279,6 @@ const runSingleProfile = async (
         getZhTitle: item => (item as Record<string, any>).name || null,
     });
 
-    let fluffStore:
-        | ReturnType<typeof buildFluffStore>
-        | undefined;
-
-    if (profile.fluffFile && profile.fluffRootKey) {
-        const fluffBilingual = await loadBilingualFileCached(profile.fluffFile, fileCache);
-        fluffStore = buildFluffStore(
-            getRootEntries(fluffBilingual.zh, profile.fluffRootKey),
-            getRootEntries(fluffBilingual.en, profile.fluffRootKey)
-        );
-    }
-
-    const reprintMap = buildReprintMap(enEntries, getDefaultId);
-    const outputData: Record<string, any>[] = [];
-
-    for (const enItem of enEntries) {
-        const id = getDefaultId(enItem);
-        const zhItem = zhMap.get(id);
-        if (!zhItem) {
-            deps.logger.log(profile.dataType, `未找到中文版本条目：${enItem.name} (${id})`);
-        }
-        const full = fluffStore?.getFull(id);
-        outputData.push(buildEntity(profile, enItem, zhItem, enMap, reprintMap, full, deps.logger));
-    }
-
-    if (profile.outputMode === 'file') {
-        await writeFileOutput(profile, outputData, deps.logger);
-        await writeNameListOutput(profile, outputData);
-        console.log(`[prepareData] ${profile.dataType} 完成 (${outputData.length})`);
-    } else {
-        await writeCollectionOutput(profile, outputData);
-    }
-
-    return outputData.length;
-};
-
-export const runGenericProfiles = async (
-    profiles: ExportProfile[],
-    deps: GenericExporterDeps
-): Promise<{ counts: Record<string, number>; data: Record<string, Record<string, any>[]> }> => {
-    const fileCache = new Map<string, { en: Record<string, any>; zh: Record<string, any> }>();
-    const counts: Record<string, number> = {};
-    const data: Record<string, Record<string, any>[]> = {};
-
-    for (const profile of profiles) {
-        const result = await runSingleProfileWithData(profile, deps, fileCache);
-        counts[profile.dataType] = result.length;
-        data[profile.dataType] = result;
-    }
-
-    return { counts, data };
-};
-
-const runSingleProfileWithData = async (
-    profile: ExportProfile,
-    deps: GenericExporterDeps,
-    fileCache: Map<string, { en: Record<string, any>; zh: Record<string, any> }>
-): Promise<Record<string, any>[]> => {
-    const bilingual = await loadBilingualFileCached(profile.sourceFile, fileCache);
-    const enRawEntries = getRootEntries(bilingual.en, profile.rootKey);
-    const zhRawEntries = getRootEntries(bilingual.zh, profile.rootKey);
-
-    const { entries: enEntries, map: enMap } = dedupeEntries(
-        enRawEntries,
-        getDefaultId,
-        deps.logger,
-        profile.dataType
-    );
-    const { entries: zhEntries, map: zhMap } = dedupeEntries(
-        zhRawEntries,
-        getDefaultId,
-        deps.logger,
-        profile.dataType
-    );
-
     let fluffStore: ReturnType<typeof buildFluffStore> | undefined;
     if (profile.fluffFile && profile.fluffRootKey) {
         const fluffBilingual = await loadBilingualFileCached(profile.fluffFile, fileCache);
@@ -367,6 +289,15 @@ const runSingleProfileWithData = async (
     }
 
     const reprintMap = buildReprintMap(enEntries, getDefaultId);
+
+    // 预扫描：找出所有条目中存在汉化差异的键，强制该类型所有文件都拆分这些键
+    const diffKeys = collectDiffKeys(enEntries, zhMap);
+    const baseForceLocalized = new Set(profile.forceLocalizedKeys || []);
+    const effectiveForceLocalized = [...new Set([...baseForceLocalized, ...diffKeys])];
+    const effectiveProfile = effectiveForceLocalized.length > baseForceLocalized.size
+        ? { ...profile, forceLocalizedKeys: effectiveForceLocalized }
+        : profile;
+
     const outputData: Record<string, any>[] = [];
 
     for (const enItem of enEntries) {
@@ -376,16 +307,33 @@ const runSingleProfileWithData = async (
             deps.logger.log(profile.dataType, `未找到中文版本条目：${enItem.name} (${id})`);
         }
         const full = fluffStore?.getFull(id);
-        outputData.push(buildEntity(profile, enItem, zhItem, enMap, reprintMap, full, deps.logger));
+        outputData.push(buildEntity(effectiveProfile, enItem, zhItem, enMap, reprintMap, full, deps.logger));
     }
 
-    if (profile.outputMode === 'file') {
-        await writeFileOutput(profile, outputData, deps.logger);
-        await writeNameListOutput(profile, outputData);
-        console.log(`[prepareData] ${profile.dataType} 完成 (${outputData.length})`);
-    } else {
-        await writeCollectionOutput(profile, outputData);
-    }
+    await writeFileOutput(profile, outputData, deps.logger);
+    await writeNameListOutput(profile, outputData);
 
     return outputData;
+};
+
+export interface GenericFileExporterResult {
+    counts: Record<string, number>;
+    data: Record<string, Record<string, any>[]>;
+}
+
+export const runGenericFileExporter = async (
+    profiles: ExportProfile[],
+    deps: { idMgr: IdMgrLike; logger: LoggerLike }
+): Promise<GenericFileExporterResult> => {
+    const fileCache = new Map<string, { en: Record<string, any>; zh: Record<string, any> }>();
+    const counts: Record<string, number> = {};
+    const data: Record<string, Record<string, any>[]> = {};
+
+    for (const profile of profiles) {
+        const result = await runSingleProfile(profile, deps, fileCache);
+        counts[profile.dataType] = result.length;
+        data[profile.dataType] = result;
+    }
+
+    return { counts, data };
 };

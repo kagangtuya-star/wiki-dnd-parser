@@ -30,6 +30,7 @@ import {
 } from './types/items';
 import { parseContent } from './contentGen.js';
 import { mwUtil } from './config.js';
+import { escapeFileName } from './exporters/shared.js';
 import {
     buildGroupedBlock,
     classifyI18nKeys,
@@ -1133,6 +1134,7 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
                 dataType: 'item',
                 uid: `item_${id}`,
                 id: id,
+                basicRules2024: !!((enItem as any).basicRules2024 || (enItem as any).edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
                 ...common,
                 translator,
                 isBaseItem: true,
@@ -1185,10 +1187,10 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
-            );
-            const fileName = `item_1_${sourceId}_1_${baseName}.json`;
+            ));
+            const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(itemData, null, 2), 'utf-8');
             //     console.log(`已生成物品文件：${ filePath } `);
@@ -1448,10 +1450,10 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
-            );
-            const fileName = `item_1_${sourceId}_1_${baseName}.json`;
+            ));
+            const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(itemData, null, 2), 'utf-8');
         }
@@ -1677,6 +1679,7 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
                 dataType: 'item',
                 uid: `item_${id}`,
                 id: id,
+                basicRules2024: !!((enItem as any).basicRules2024 || (enItem as any).edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
                 ...common,
                 translator,
                 rarity: enItem.inherits?.rarity || enItem.rarity,
@@ -1711,10 +1714,10 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
-            );
-            const fileName = `item_1_${sourceId}_1_${baseName}.json`;
+            ));
+            const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(itemData, null, 2), 'utf-8');
         }
@@ -1919,6 +1922,7 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
                 dataType: 'spell',
                 uid: `spell_${id}`,
                 id: id,
+                basicRules2024: !!((enSpell as any).basicRules2024 || (enSpell as any).edition === 'one' || (typeof enSpell.source === 'string' && enSpell.source.startsWith('X'))),
                 ...common,
                 translator,
                 displayName: {
@@ -1969,10 +1973,10 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
-            const baseName = mwUtil.getMwTitle(
+            const baseName = escapeFileName(mwUtil.getMwTitle(
                 spellData.displayName.en || spellData.displayName.zh || id
-            );
-            const fileName = `Spell_1_${sourceId}_1_${baseName}.json`;
+            ));
+            const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
             await fs.writeFile(filePath, JSON.stringify(spellData, null, 2), 'utf-8');
         }

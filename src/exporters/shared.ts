@@ -1,6 +1,103 @@
 import { createHash } from 'crypto';
 import path from 'path';
+import XLSX from 'xlsx';
 import { i18nKeyRules } from '../i18n.js';
+
+export interface SubraceReplacement {
+    subraceName: string;
+    subraceENGName: string;
+    subraceSource: string;
+    fullName: string;
+    fullENGName: string;
+    isStandalonePage: boolean;
+}
+
+const _subraceReplacementCache: { map: Map<string, SubraceReplacement>; nameMap: Map<string, SubraceReplacement> } | null = null;
+
+export const loadSubraceReplacementDictionary = (): Map<string, SubraceReplacement> => {
+    const dictionaryPath = path.join(process.cwd(), 'config/子种族名字替换词典.xlsx');
+    const workbook = XLSX.readFile(dictionaryPath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+    
+    const replacementMap = new Map<string, SubraceReplacement>();
+    
+    for (const row of data as any[]) {
+        const subraceENGName = row['缀名原名'] || row['原名全文'];
+        const subraceSource = row['子种族来源'];
+        const fullName = row['子种族全名'];
+        const fullENGName = row['原名全文'];
+        
+        if (subraceENGName && subraceSource && fullName && fullENGName) {
+            const key = `${subraceENGName}|${subraceSource}`;
+            replacementMap.set(key, {
+                subraceName: row['子种族缀名'] || '',
+                subraceENGName,
+                subraceSource,
+                fullName,
+                fullENGName,
+                isStandalonePage: row['是否作为单独页面存在'] !== false && row['是否作为单独页面存在'] !== 'false',
+            });
+        }
+    }
+    
+    return replacementMap;
+};
+
+export const loadSubraceReplacementByNameMap = (): Map<string, SubraceReplacement> => {
+    const dictionaryPath = path.join(process.cwd(), 'config/子种族名字替换词典.xlsx');
+    const workbook = XLSX.readFile(dictionaryPath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+    
+    const nameMap = new Map<string, SubraceReplacement>();
+    
+    for (const row of data as any[]) {
+        const subraceENGName = row['缀名原名'] || row['原名全文'];
+        const subraceSource = row['子种族来源'];
+        const fullName = row['子种族全名'];
+        const fullENGName = row['原名全文'];
+        const subraceName = row['子种族缀名'] || '';
+        
+        if (subraceENGName && subraceSource && fullName && fullENGName) {
+            const replacement: SubraceReplacement = {
+                subraceName,
+                subraceENGName,
+                subraceSource,
+                fullName,
+                fullENGName,
+                isStandalonePage: row['是否作为单独页面存在'] !== false && row['是否作为单独页面存在'] !== 'false',
+            };
+            const addKey = (key: string) => {
+                const normalizedKey = key.trim();
+                if (normalizedKey && !nameMap.has(normalizedKey)) {
+                    nameMap.set(normalizedKey, replacement);
+                }
+            };
+            addKey(subraceENGName.toLowerCase());
+            addKey(fullENGName.toLowerCase());
+            addKey(subraceName);
+            addKey(fullName);
+        }
+    }
+    
+    return nameMap;
+};
+
+export const escapeFileName = (name: string): string => {
+    return name
+        .replace(/\\/g, '_0_')
+        .replace(/\//g, '_9_')
+        .replace(/:/g, '_2_')
+        .replace(/\*/g, '_3_')
+        .replace(/"/g, '_4_')
+        .replace(/</g, '_5_')
+        .replace(/>/g, '_6_')
+        .replace(/\|/g, '_7_')
+        .replace(/\?/g, '_8_');
+};
 
 export const getCanonicalName = (item?: { ENG_name?: string; name?: string } | null): string => {
     const name = item?.ENG_name || item?.name || '';
@@ -16,12 +113,7 @@ export const getDefaultId = (item?: { ENG_name?: string; name?: string; source?:
 export const parseReprintedAsSources = (
     reprintedAs?: (string | { uid: string; tag?: string })[]
 ): { source: string; page: number }[] => {
-    if (!reprintedAs) return [];
-    return reprintedAs.map(entry => {
-        const str = typeof entry === 'string' ? entry : entry.uid;
-        const source = str.split('|').pop() || '';
-        return { source, page: 0 };
-    });
+    return [];
 };
 
 export const normalizeReprintedAs = (
@@ -291,22 +383,18 @@ export const buildAllSources = (
     ids: string[],
     entryMap: Map<string, Record<string, any>>
 ) => {
-    const sources: { source: string; page: number }[] = [];
-    const seen = new Set<string>();
+    const sourceMap = new Map<string, number>();
 
     const addSource = (source: string, page: number) => {
         if (!source) return;
-        const key = `${source}|${page}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        sources.push({ source, page });
+        if (!sourceMap.has(source) || page > sourceMap.get(source)!) {
+            sourceMap.set(source, page);
+        }
     };
 
     for (const relatedId of ids) {
         const relatedEntry = entryMap.get(relatedId);
         if (!relatedEntry) {
-            const fallbackSource = relatedId.split('|').pop();
-            if (fallbackSource) addSource(fallbackSource, 0);
             continue;
         }
 
@@ -315,5 +403,246 @@ export const buildAllSources = (
         }
     }
 
-    return sources;
+    return [...sourceMap.entries()].map(([source, page]) => ({ source, page }));
 };
+
+export class SectionTextIdMap {
+    private static instance: SectionTextIdMap;
+    private map: Map<string, string> = new Map(); // key: "bookId|chapterIndex|sectionTitle", value: textId
+    private bookIdMap: Map<string, Map<string, string>> = new Map(); // key: bookId, value: Map of sectionTitle to textId
+    private chapterIndexMap: Map<string, Map<number, Map<string, string>>> = new Map(); // key: bookId, value: Map of chapterIndex to Map of sectionTitle to textId
+    private bookIdToTextIdMap: Map<string, string> = new Map(); // key: "bookId|textId", value: textId (for quick lookup)
+    private chapterIndexToTextIdMap: Map<string, string> = new Map(); // key: "bookId|chapterIndex", value: textId (direct lookup)
+    private chapterIndexToPageTitleMap: Map<string, { zh: string; en: string }> = new Map(); // key: "bookId|chapterIndex", value: { zh: zhPageTitle, en: enPageTitle }
+    private chapterIndexToSubpageTitleMap: Map<string, Map<string, { zh: string; en: string }>> = new Map(); // key: "bookId|chapterIndex", value: Map of sectionTitle to { zh: zhPageTitle, en: enPageTitle }
+    private sectionTitleToPageTitleMap: Map<string, { zh: string; en: string }> = new Map(); // key: "bookId|sectionTitle", value: { zh: zhPageTitle, en: enPageTitle }
+    private allMappings: Array<{ bookId: string; textId: string; chapterIndex?: number; sectionTitle?: string }> = [];
+
+    private constructor() {}
+
+    static getInstance(): SectionTextIdMap {
+        if (!SectionTextIdMap.instance) {
+            SectionTextIdMap.instance = new SectionTextIdMap();
+        }
+        return SectionTextIdMap.instance;
+    }
+
+    clear(): void {
+        this.map.clear();
+        this.bookIdMap.clear();
+        this.chapterIndexMap.clear();
+        this.bookIdToTextIdMap.clear();
+        this.chapterIndexToPageTitleMap.clear();
+        this.chapterIndexToSubpageTitleMap.clear();
+        this.sectionTitleToPageTitleMap.clear();
+    }
+    
+    setPageTitle(bookId: string, chapterIndex: number, zhTitle: string, enTitle: string): void {
+        const normalizedBookId = bookId.toLowerCase();
+        const key = `${normalizedBookId}|${chapterIndex}`;
+        this.chapterIndexToPageTitleMap.set(key, { zh: zhTitle, en: enTitle });
+    }
+    
+    getPageTitle(bookId: string, chapterIndex: string | number, isZh: boolean, sectionTitle?: string): string | null {
+        const normalizedBookId = bookId.toLowerCase();
+        const key = `${normalizedBookId}|${chapterIndex}`;
+        
+        if (sectionTitle) {
+            const subpageMap = this.chapterIndexToSubpageTitleMap.get(key);
+            if (subpageMap) {
+                const subpageTitle = subpageMap.get(sectionTitle);
+                if (subpageTitle) {
+                    return isZh ? subpageTitle.zh : subpageTitle.en;
+                }
+            }
+        }
+        
+        const title = this.chapterIndexToPageTitleMap.get(key);
+        if (title) {
+            return isZh ? title.zh : title.en;
+        }
+        return null;
+    }
+    
+    setSubpageTitle(bookId: string, chapterIndex: number, sectionTitle: string, zhTitle: string, enTitle: string): void {
+        const normalizedBookId = bookId.toLowerCase();
+        const key = `${normalizedBookId}|${chapterIndex}`;
+        
+        if (!this.chapterIndexToSubpageTitleMap.has(key)) {
+            this.chapterIndexToSubpageTitleMap.set(key, new Map());
+        }
+        
+        this.chapterIndexToSubpageTitleMap.get(key)!.set(sectionTitle, { zh: zhTitle, en: enTitle });
+    }
+
+    addMapping(bookId: string, textId: string, chapterIndex?: number, sectionTitle?: string): void {
+        const normalizedBookId = bookId.toLowerCase();
+        
+        if (sectionTitle) {
+            const key = `${normalizedBookId}|${chapterIndex ?? 0}|${sectionTitle}`;
+            this.map.set(key, textId);
+            
+            if (!this.bookIdMap.has(normalizedBookId)) {
+                this.bookIdMap.set(normalizedBookId, new Map());
+            }
+            this.bookIdMap.get(normalizedBookId)!.set(sectionTitle, textId);
+            
+            if (chapterIndex !== undefined) {
+                if (!this.chapterIndexMap.has(normalizedBookId)) {
+                    this.chapterIndexMap.set(normalizedBookId, new Map());
+                }
+                if (!this.chapterIndexMap.get(normalizedBookId)!.has(chapterIndex)) {
+                    this.chapterIndexMap.get(normalizedBookId)!.set(chapterIndex, new Map());
+                }
+                this.chapterIndexMap.get(normalizedBookId)!.get(chapterIndex)!.set(sectionTitle, textId);
+            }
+        }
+        
+        // ???????bookId|textId -> textId
+        this.bookIdToTextIdMap.set(`${normalizedBookId}|${textId}`, textId);
+        
+        // ???????bookId|chapterIndex -> textId??????
+        if (chapterIndex !== undefined) {
+            const chapterKey = `${normalizedBookId}|${chapterIndex}`;
+            // ??????????????????
+            if (!this.chapterIndexToTextIdMap.has(chapterKey)) {
+                this.chapterIndexToTextIdMap.set(chapterKey, textId);
+            }
+        }
+        
+        // ??????
+        this.allMappings.push({ bookId, textId, chapterIndex, sectionTitle });
+    }
+    
+    printStats(): void {
+        // ???5???
+        for (let i = 0; i < Math.min(5, this.allMappings.length); i++) {
+            const m = this.allMappings[i];
+            // console.log(`  ${i + 1}. bookId=${m.bookId}, textId=${m.textId}, chapterIndex=${m.chapterIndex}, sectionTitle=${m.sectionTitle}`);
+        }
+    }
+
+    getTextId(bookId: string, chapterIndexOrTextId?: string | number, sectionTitle?: string): string | null {
+        const normalizedBookId = bookId.toLowerCase();
+        
+        // ??0??????chapterIndexOrTextId??chapterIndex????????textId????
+        if (chapterIndexOrTextId !== undefined && typeof chapterIndexOrTextId === 'number') {
+            const chapterKey = `${normalizedBookId}|${chapterIndexOrTextId}`;
+            if (this.chapterIndexToTextIdMap.has(chapterKey)) {
+                return this.chapterIndexToTextIdMap.get(chapterKey)!;
+            }
+        }
+        
+        // ??1????chapterIndexOrTextId??textId????
+        if (chapterIndexOrTextId !== undefined) {
+            const textIdKey = `${normalizedBookId}|${chapterIndexOrTextId}`;
+            if (this.bookIdToTextIdMap.has(textIdKey)) {
+                return this.bookIdToTextIdMap.get(textIdKey)!;
+            }
+        }
+
+        // ??2??????bookId + chapterIndex + sectionTitle?
+        if (sectionTitle && chapterIndexOrTextId !== undefined) {
+            const key = `${normalizedBookId}|${chapterIndexOrTextId}|${sectionTitle}`;
+            if (this.map.has(key)) {
+                return this.map.get(key)!;
+            }
+        }
+
+        // ??3????bookId?sectionTitle
+        if (sectionTitle) {
+            if (this.bookIdMap.has(normalizedBookId)) {
+                const bookMap = this.bookIdMap.get(normalizedBookId)!;
+                if (bookMap.has(sectionTitle)) {
+                    return bookMap.get(sectionTitle)!;
+                }
+            }
+        }
+
+        // ??4???bookId?chapterIndex?sectionTitle??????
+        if (sectionTitle && chapterIndexOrTextId !== undefined && typeof chapterIndexOrTextId === 'number' && this.chapterIndexMap.has(normalizedBookId)) {
+            const chapterMap = this.chapterIndexMap.get(normalizedBookId)!;
+            if (chapterMap.has(chapterIndexOrTextId)) {
+                const sectionMap = chapterMap.get(chapterIndexOrTextId)!;
+                if (sectionMap.has(sectionTitle)) {
+                    return sectionMap.get(sectionTitle)!;
+                }
+            }
+        }
+        
+        // ??5?????sectionTitle???????????
+        if (sectionTitle) {
+            const normalizedTitle = sectionTitle.toLowerCase().trim();
+            if (this.bookIdMap.has(normalizedBookId)) {
+                const bookMap = this.bookIdMap.get(normalizedBookId)!;
+                for (const [title, id] of bookMap.entries()) {
+                    if (title.toLowerCase().trim() === normalizedTitle) {
+                        return id;
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    // ?? sectionTitle ?????? chapterIndex?
+    getTextIdByTitleOnly(bookId: string, sectionTitle: string): string | null {
+        if (!sectionTitle) return null;
+        
+        const normalizedBookId = bookId.toLowerCase();
+        
+        if (this.bookIdMap.has(normalizedBookId)) {
+            const bookMap = this.bookIdMap.get(normalizedBookId)!;
+            
+            // ????
+            if (bookMap.has(sectionTitle)) {
+                return bookMap.get(sectionTitle)!;
+            }
+            
+            // ??????????????
+            const normalizedTitle = sectionTitle.toLowerCase().trim();
+            for (const [title, id] of bookMap.entries()) {
+                if (title.toLowerCase().trim() === normalizedTitle) {
+                    return id;
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    // ???? sectionTitle ???? ????
+    setSectionTitleToPageTitle(bookId: string, sectionTitle: string, zhPageTitle: string, enPageTitle: string): void {
+        const normalizedBookId = bookId.toLowerCase();
+        const key = `${normalizedBookId}|${sectionTitle}`;
+        this.sectionTitleToPageTitleMap.set(key, { zh: zhPageTitle, en: enPageTitle });
+    }
+    
+    // ???? sectionTitle ????
+    getPageTitleBySectionTitle(bookId: string, sectionTitle: string, isZh: boolean): string | null {
+        const normalizedBookId = bookId.toLowerCase();
+        
+        // ????
+        const key = `${normalizedBookId}|${sectionTitle}`;
+        const title = this.sectionTitleToPageTitleMap.get(key);
+        if (title) {
+            return isZh ? title.zh : title.en;
+        }
+        
+        // ??????????????
+        const normalizedTitle = sectionTitle.toLowerCase().trim();
+        for (const [mapKey, mapTitle] of this.sectionTitleToPageTitleMap.entries()) {
+            if (mapKey.startsWith(`${normalizedBookId}|`)) {
+                const mapSectionTitle = mapKey.substring(normalizedBookId.length + 1);
+                if (mapSectionTitle.toLowerCase().trim() === normalizedTitle) {
+                    return isZh ? mapTitle.zh : mapTitle.en;
+                }
+            }
+        }
+        
+        return null;
+    }
+}
+
+export const sectionTextIdMap = SectionTextIdMap.getInstance();

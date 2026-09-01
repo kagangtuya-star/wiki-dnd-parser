@@ -12,7 +12,11 @@ const extraConfig = {
 async function loadJsonFile<T = any>(filePath: string): Promise<T> {
     try {
         const content = await fs.readFile(filePath, 'utf-8');
-        return JSON.parse(content);
+        let jsonStr = content;
+        if (content.charCodeAt(0) === 0xFEFF) {
+            jsonStr = content.slice(1);
+        }
+        return JSON.parse(jsonStr);
     } catch (e) {
         console.warn(`Warning: Error loading ${filePath}:`, (e as Error).message);
         return {} as T;
@@ -59,7 +63,7 @@ async function getLegacySources(): Promise<Set<string>> {
             }
         }
     } catch (error) {
-        console.warn(`无法读取 parser.js 获取过时源数据列表，使用默认列表:`, error);
+        console.warn('无法读取 parser.js 获取过时源数据列表，使用默认列表:', error);
     }
 
     return legacySources;
@@ -69,14 +73,22 @@ function buildNameToIdMap(dataArray: any[]): Map<string, string> {
     const nameToIdMap = new Map<string, string>();
 
     function removeChapterPrefix(name: string): string {
-        // 匹配各种章节前缀格式
         const prefixes = [
             /^Chapter \d+: /i,
+            /^Chapter \d+:/i,
             /^Chapter \d+ /i,
             /^Part \d+: /i,
+            /^Part \d+:/i,
             /^Part \d+ /i,
             /^Appendix [A-Z]: /i,
+            /^Appendix [A-Z]:/i,
+            /^Appendix \d+:/i,
+            /^Appendix \d+: /i,
             /^Appendix [A-Z] /i,
+            /^Appendix [A-Z] /i,
+            /^[A-Z]\d+. /i,
+            /^[A-Z]\d+: /i,
+			/^Encounter \d+: /i,
         ];
         
         for (const prefix of prefixes) {
@@ -162,98 +174,206 @@ function getOrderForBooktype(booktype: string, bookId: string, coreOrder: Record
     return orderMap[booktype] ?? 100;
 }
 
+function convertHeaderName(header: string | any): string {
+    if (typeof header === 'string') {
+        return header;
+    }
+    if (header && typeof header === 'object' && header.header) {
+        return header.header;
+    }
+    return '';
+}
+
+function convertHeadersToContents(
+    enHeaders: Array<string | any> | undefined,
+    zhHeaders: Array<string | any> | undefined,
+    nameToIdMap: Map<string, string>,
+    level: number = 0
+): any[] {
+    if (!enHeaders || !Array.isArray(enHeaders)) {
+        return [];
+    }
+
+    const result: any[] = [];
+    
+    for (let i = 0; i < enHeaders.length; i++) {
+        const enHeader = enHeaders[i];
+        const zhHeader = zhHeaders?.[i];
+        
+        let enName = '';
+        let zhName = '';
+        
+        if (typeof enHeader === 'string') {
+            enName = enHeader;
+            zhName = typeof zhHeader === 'string' ? zhHeader : '';
+        } else if (enHeader && typeof enHeader === 'object') {
+            if (enHeader.header) {
+                enName = enHeader.header;
+                zhName = typeof zhHeader === 'object' && zhHeader.header ? zhHeader.header : '';
+            } else if (enHeader.name) {
+                enName = enHeader.name;
+                zhName = typeof zhHeader === 'object' && zhHeader.name ? zhHeader.name : '';
+            } else if (enHeader.ENG_name) {
+                enName = enHeader.ENG_name;
+                zhName = typeof zhHeader === 'object' && zhHeader.name ? zhHeader.name : '';
+            }
+        }
+        
+        if (!enName) continue;
+
+        const id = nameToIdMap.get(enName) || '';
+        const ordinal = typeof enHeader === 'object' && enHeader.ordinal 
+            ? enHeader.ordinal 
+            : { type: 'text', identifier: 0 };
+
+        const item: any = {
+            displayName: {
+                zh: zhName || '',
+                en: enName,
+            },
+            ordinal: ordinal,
+            source: '',
+            headers: [],
+            alonepage: true,
+            id: id,
+        };
+
+        if (typeof enHeader === 'object' && enHeader.headers) {
+            item.headers = convertHeadersToContents(
+                enHeader.headers,
+                typeof zhHeader === 'object' ? zhHeader.headers : undefined,
+                nameToIdMap,
+                level + 1
+            );
+        }
+
+        result.push(item);
+    }
+
+    return result;
+}
+
+function convertBookContentsToTargetFormat(
+    enBook: any,
+    zhBook: any,
+    nameToIdMap: Map<string, string>
+): any[] {
+    if (!enBook.contents || !Array.isArray(enBook.contents)) {
+        return [];
+    }
+
+    const result: any[] = [];
+    const zhContentsMap = new Map<string, any>();
+
+    if (zhBook.contents && Array.isArray(zhBook.contents)) {
+        for (const zhContent of zhBook.contents) {
+            if (zhContent.ENG_name) {
+                zhContentsMap.set(zhContent.ENG_name, zhContent);
+            }
+        }
+    }
+
+    for (const enContent of enBook.contents) {
+        const zhContent = zhContentsMap.get(enContent.name);
+
+        let ordinal = enContent.ordinal || { type: 'chapter', identifier: 0 };
+        if (enContent.name === 'Credits') {
+            ordinal = { ...ordinal, type: 'credits' };
+        }
+
+        const item: any = {
+            displayName: {
+                zh: zhContent?.name || '',
+                en: enContent.name,
+            },
+            ordinal: ordinal,
+            source: '',
+            headers: convertHeadersToContents(
+                enContent.headers,
+                zhContent?.headers,
+                nameToIdMap,
+                1
+            ),
+            alonepage: true,
+            id: nameToIdMap.get(enContent.name) || '',
+        };
+
+        result.push(item);
+    }
+
+    return result;
+}
+
+function findBookById(books: any[], id: string): any | undefined {
+    if (!Array.isArray(books)) return undefined;
+    return books.find((b: any) => b.id === id);
+}
+
 function convertToOutputFormat(
-    book: any, 
+    enBook: any,
+    zhBook: any,
     type: 'book' | 'adventure',
     booktypeConfig: Record<string, string[]> | null,
     coreOrder: Record<string, number>,
     legacySources: Set<string>,
     nameToIdMap: Map<string, string>
-) {
-    const convertHeaders = (headers: Array<string | { index?: number; header: string }> = []) => {
-        return headers.map((header) => {
-            const headerObj = typeof header === 'string' ? { header } : header;
-            return {
-                name: headerObj.header,
-                zh_name: headerObj.header,
-                ordinal: { type: 'text', identifier: 0 },
-                source: '',
-                alonepage: false,
-                headers: [],
-            };
-        });
-    };
-
-    const convertContents = (contents: any[]) => {
-        if (!Array.isArray(contents)) return [];
-        
-        return contents.map((chapter, idx) => {
-            const ordinal = chapter.ordinal || { type: 'chapter', identifier: idx + 1 };
-            const headers = convertHeaders(chapter.headers);
-            
-            let id = '';
-            const nameToMatch = chapter.ENG_name || chapter.name;
-            if (nameToMatch) {
-                id = nameToIdMap.get(nameToMatch) || '';
-            }
-            
-            return {
-                id,
-                name: chapter.ENG_name || chapter.name,
-                zh_name: chapter.name,
-                ordinal: {
-                    type: ordinal.type,
-                    identifier: ordinal.identifier,
-                },
-                source: '',
-                headers,
-                alonepage: headers.length > 0,
-            };
-        });
-    };
-
-    const coverPath = (book.cover?.path || '').replace(/\//g, '-');
-    const coverType = book.cover?.type || 'internal';
+): any {
+    const coverPath = (enBook.cover?.path || '').replace(/\//g, '-');
+    const coverType = enBook.cover?.type || 'internal';
 
     let booktype = '';
     if (booktypeConfig) {
-        for (const [typeName, ids] of Object.entries(booktypeConfig)) {
-            if (Array.isArray(ids) && ids.includes(book.id)) {
-                booktype = typeName;
+        for (const [_type, ids] of Object.entries(booktypeConfig)) {
+            if (Array.isArray(ids) && ids.includes(enBook.id)) {
+                booktype = _type;
                 break;
             }
         }
     }
 
-    const order = getOrderForBooktype(booktype, book.id, coreOrder);
+    const order = getOrderForBooktype(booktype, enBook.id, coreOrder);
 
-    return {
+    const result: any = {
         _hjschema: '出版物',
-        name: book.ENG_name || book.name,
-        zh_name: book.name,
-        id: book.id,
+        id: enBook.id,
+        dataType: type,
         booktype,
-        tag: getTagsFromGroup(book.group),
-        newest: !legacySources.has(book.id),
+        tag: getTagsFromGroup(enBook.group),
+        newest: !legacySources.has(enBook.id),
         id_zh: '',
         order,
-        source: book.source,
+        source: enBook.source || '',
         cover: {
             path: coverPath,
             type: coverType,
         },
-        published: book.published || '',
-        author: book.author || '',
+        published: enBook.published || '',
+        author: zhBook?.author || enBook.author || '',
         merge: '',
-        contents: convertContents(book.contents),
     };
+
+    const zhName = zhBook?.name || '';
+    const enName = enBook.ENG_name || enBook.name || '';
+    if (zhName || enName) {
+        result.displayName = {
+            zh: zhName,
+            en: enName,
+        };
+    }
+
+    const contents = convertBookContentsToTargetFormat(enBook, zhBook, nameToIdMap);
+    if (contents.length > 0) {
+        result.contents = contents;
+    }
+
+    return result;
 }
 
-(async () => {
+export const generateContents = async () => {
     try {
         console.log('[generateContents] 开始生成出版物目录');
         
-        const [booksEn, booksZh, adventuresEn, adventuresZh, existingContents, booktypeConfig, coreOrder] = await Promise.all([
+        const [booksEn, booksZh, adventuresEn, adventuresZh, existingContents, booktypeConfig, coreOrder, legacySources] = await Promise.all([
             loadJsonFile(path.join(config.DATA_EN_DIR, 'books.json')),
             loadJsonFile(path.join(config.DATA_ZH_DIR, 'books.json')),
             loadJsonFile(path.join(config.DATA_EN_DIR, 'adventures.json')),
@@ -261,11 +381,10 @@ function convertToOutputFormat(
             fs.readdir(extraConfig.CONFIG_CONTENTS_DIR).catch(() => []),
             loadJsonFile(extraConfig.BOOKTYPE_CONFIG).catch(() => null),
             loadJsonFile(extraConfig.CORE_ORDER_CONFIG).catch(() => {}),
+            getLegacySources(),
         ]);
 
-        const legacySources = await getLegacySources();
-
-        const existingIds = new Set(existingContents.map(f => f.replace('.json', '')));
+        const existingIds = new Set(existingContents.filter(f => f.endsWith('.json')).map(f => f.replace('.json', '')));
         console.log(`[generateContents] 已存在的自定义目录: ${existingIds.size} 个`);
         console.log(`[generateContents] 加载分类配置: ${booktypeConfig ? Object.keys(booktypeConfig).length + ' 个类别' : '未找到'}`);
 
@@ -275,104 +394,127 @@ function convertToOutputFormat(
         await fs.mkdir(outputBookDir, { recursive: true });
         await fs.mkdir(outputAdventureDir, { recursive: true });
 
-        const books = [...(Array.isArray(booksZh.book) ? booksZh.book : []), ...(Array.isArray(booksEn.book) ? booksEn.book : [])];
-        const adventures = [...(Array.isArray(adventuresZh.adventure) ? adventuresZh.adventure : []), ...(Array.isArray(adventuresEn.adventure) ? adventuresEn.adventure : [])];
-
-        const bookMap = new Map<string, any>();
-        books.forEach(book => {
-            if (!bookMap.has(book.id)) {
-                bookMap.set(book.id, book);
-            }
-        });
-
-        const adventureMap = new Map<string, any>();
-        adventures.forEach(adv => {
-            if (!adventureMap.has(adv.id)) {
-                adventureMap.set(adv.id, adv);
-            }
-        });
-
-        let bookCount = 0;
-        for (const [id, book] of bookMap) {
-            if (existingIds.has(id)) {
-                continue;
-            }
-
-            try {
-                const nameToIdMap = await loadBookContentFile(id, 'book');
-                const output = convertToOutputFormat(book, 'book', booktypeConfig, coreOrder, legacySources, nameToIdMap);
-                const outputPath = path.join(outputBookDir, `${id}.json`);
-                await fs.writeFile(outputPath, JSON.stringify(output, null, 4), 'utf-8');
-                bookCount++;
-            } catch (err) {
-                console.warn(`Failed to process book ${id}:`, err);
-            }
+        const allBookIds = new Set<string>();
+        if (Array.isArray(booksZh.book)) {
+            booksZh.book.forEach((b: any) => allBookIds.add(b.id));
         }
-        console.log(`[generateContents] 生成扩展目录：${bookCount} 个`);
-
-        let adventureCount = 0;
-        for (const [id, adventure] of adventureMap) {
-            if (existingIds.has(id)) {
-                continue;
-            }
-
-            try {
-                const nameToIdMap = await loadBookContentFile(id, 'adventure');
-                const output = convertToOutputFormat(adventure, 'adventure', booktypeConfig, coreOrder, legacySources, nameToIdMap);
-                const outputPath = path.join(outputAdventureDir, `${id}.json`);
-                await fs.writeFile(outputPath, JSON.stringify(output, null, 4), 'utf-8');
-                adventureCount++;
-            } catch (err) {
-                console.warn(`[generateContents] Failed to process adventure ${id}:`, err);
-            }
+        if (Array.isArray(booksEn.book)) {
+            booksEn.book.forEach((b: any) => allBookIds.add(b.id));
         }
-        console.log(`[generateContents] 生成模组目录：${adventureCount} 个`);
+        
+        const allAdventureIds = new Set<string>();
+        if (Array.isArray(adventuresZh.adventure)) {
+            adventuresZh.adventure.forEach((a: any) => allAdventureIds.add(a.id));
+        }
+        if (Array.isArray(adventuresEn.adventure)) {
+            adventuresEn.adventure.forEach((a: any) => allAdventureIds.add(a.id));
+        }
 
-        // 复制已有目录到 output
-        const allBookIds = new Set<string>([...(booksZh.book || []), ...(booksEn.book || [])].map(b => b.id));
-        const allAdventureIds = new Set<string>([...(adventuresZh.adventure || []), ...(adventuresEn.adventure || [])].map(a => a.id));
+        let generatedBookCount = 0;
+        let generatedAdventureCount = 0;
         let copiedCount = 0;
 
-        for (const filename of existingContents) {
-            if (!filename.endsWith('.json')) continue;
-            const id = filename.replace('.json', '');
-            
-            const srcPath = path.join(extraConfig.CONFIG_CONTENTS_DIR, filename);
-            let destDir: string;
-            
-            if (allBookIds.has(id)) {
-                destDir = outputBookDir;
-            } else if (allAdventureIds.has(id)) {
-                destDir = outputAdventureDir;
-            } else {
-                // 默认按 booktype-config 里的类型判断
-                destDir = outputBookDir;
-                if (booktypeConfig) {
-                    for (const [type, ids] of Object.entries(booktypeConfig)) {
-                        if (type === '模组' && Array.isArray(ids) && ids.includes(id)) {
-                            destDir = outputAdventureDir;
-                            break;
-                        }
+        for (const bookId of allBookIds) {
+            const enBook = findBookById(booksEn.book, bookId);
+            const zhBook = findBookById(booksZh.book, bookId);
+
+            if (!enBook && !zhBook) continue;
+
+            const destDir = outputBookDir;
+            const destPath = path.join(destDir, `${bookId}.json`);
+
+            if (existingIds.has(bookId)) {
+                const srcPath = path.join(extraConfig.CONFIG_CONTENTS_DIR, `${bookId}.json`);
+                try {
+                    let content = await fs.readFile(srcPath, 'utf-8');
+                    if (content.charCodeAt(0) === 0xFEFF) {
+                        content = content.slice(1);
                     }
+                    const data = JSON.parse(content);
+                    data.dataType = 'book';
+                    await fs.writeFile(destPath, JSON.stringify(data, null, 4), 'utf-8');
+                    copiedCount++;
+                } catch (err) {
+                    console.warn(`[generateContents] 复制 ${bookId} 失败:`, err);
+                }
+            } else {
+                try {
+                    const nameToIdMap = await loadBookContentFile(bookId, 'book');
+                    const generatedBook = convertToOutputFormat(
+                        enBook || {},
+                        zhBook || {},
+                        'book',
+                        booktypeConfig,
+                        coreOrder,
+                        legacySources,
+                        nameToIdMap
+                    );
+                    await fs.writeFile(destPath, JSON.stringify(generatedBook, null, 4), 'utf-8');
+                    generatedBookCount++;
+                } catch (err) {
+                    console.warn(`[generateContents] 生成 ${bookId} 目录失败:`, err);
                 }
             }
-            
-            try {
-                const destPath = path.join(destDir, filename);
-                await fs.copyFile(srcPath, destPath);
-                copiedCount++;
-            } catch (err) {
-                console.warn(`[generateContents] Failed to copy ${filename}:`, err);
+        }
+
+        for (const adventureId of allAdventureIds) {
+            const enAdventure = findBookById(adventuresEn.adventure, adventureId);
+            const zhAdventure = findBookById(adventuresZh.adventure, adventureId);
+
+            if (!enAdventure && !zhAdventure) continue;
+
+            const destDir = outputAdventureDir;
+            const destPath = path.join(destDir, `${adventureId}.json`);
+
+            if (existingIds.has(adventureId)) {
+                const srcPath = path.join(extraConfig.CONFIG_CONTENTS_DIR, `${adventureId}.json`);
+                try {
+                    let content = await fs.readFile(srcPath, 'utf-8');
+                    if (content.charCodeAt(0) === 0xFEFF) {
+                        content = content.slice(1);
+                    }
+                    const data = JSON.parse(content);
+                    data.dataType = 'adventure';
+                    await fs.writeFile(destPath, JSON.stringify(data, null, 4), 'utf-8');
+                    copiedCount++;
+                } catch (err) {
+                    console.warn(`[generateContents] 复制 ${adventureId} 失败:`, err);
+                }
+            } else {
+                try {
+                    const nameToIdMap = await loadBookContentFile(adventureId, 'adventure');
+                    const generatedAdventure = convertToOutputFormat(
+                        enAdventure || {},
+                        zhAdventure || {},
+                        'adventure',
+                        booktypeConfig,
+                        coreOrder,
+                        legacySources,
+                        nameToIdMap
+                    );
+                    await fs.writeFile(destPath, JSON.stringify(generatedAdventure, null, 4), 'utf-8');
+                    generatedAdventureCount++;
+                } catch (err) {
+                    console.warn(`[generateContents] 生成 ${adventureId} 目录失败:`, err);
+                }
             }
         }
         
-        console.log(`[generateContents] 复制已有目录：${copiedCount} 个`);
+        console.log(`[generateContents] 生成书籍目录: ${generatedBookCount} 个`);
+        console.log(`[generateContents] 生成模组目录: ${generatedAdventureCount} 个`);
+        console.log(`[generateContents] 复制/合并已有目录: ${copiedCount} 个`);
         console.log(`[generateContents] 完成`);
+        
+        return { bookCount: generatedBookCount, adventureCount: generatedAdventureCount, copiedCount };
     } catch (e) {
-        console.error('Fatal error:', e);
+        console.error('致命错误:', e);
         if (e instanceof Error) {
-            console.error('Error stack:', e.stack);
+            console.error('错误堆栈:', e.stack);
         }
-        process.exit(1);
+        throw e;
     }
-})();
+};
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+    generateContents();
+}

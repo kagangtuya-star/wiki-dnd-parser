@@ -1,31 +1,64 @@
 # wiki-dnd-parser
 
 项目简介
+
 - 用途：把 5etools 的中英文数据整理为适合 MediaWiki/灰机Wiki 导入的结构化 JSON 与 HTML 片段。
 - 入口脚本：`src/prepareData.ts`（`npm run start`）。
-- 辅助脚本：`src/getGitRepo.ts`（`npm run getCnRepo`，按需拉取源数据）。  
-`src/wikiPageGenerator.ts`（`npm run page`，输出 wiki 内容页面）
+- 辅助脚本：`src/getGitRepo.ts`（`npm run getCnRepo`，按需拉取源数据）。\
+  `src/wikiPageGenerator.ts`（`npm run page`，根据 `./output` 目录下输出的 JSON 文件，生成对应的 wiki 内容页面）
+  `src/list-files.ts`（`npm run listFiles`，输出output跟page文件对应页面名的收集表格）
+  `src/generateRaceTable.ts`（`npm run racetable`，补全`子种族名字替换词典.xlsx`缺失数据）
 
 运行逻辑概览
+
 1. `createOutputFolders` 清空并重建 `./output` 目录结构。
 2. 从 `src/config.ts` 的 `DATA_EN_DIR` / `DATA_ZH_DIR` 读取 JSON。
 3. 依次处理：书籍、专长、物品基础数据、物品、法术、怪物。
-4. 新增 `src/exporters/*` 共享导出层后，剩余 wiki JSON 类型由 profile 驱动导出，`class/subclass` 走独立 special-case exporter。
-5. 各 *Mgr / exporter 做中英合并、ID 对齐、缺失记录。
-6. `parseContent` 将 entries 解析为 HTML，并把 `{@tag ...}` 转成 `{{@tag|...}}`。
-7. 输出产物到 `./output`，最后生成日志、ID 对照与标签统计。
+4. 各 \*Mgr / exporter 做中英合并、ID 对齐、缺失记录。
+5. `parseContent` 将 entries 解析为 HTML，并把 `{@tag ...}` 转成 `{{@tag|...}}`。
+6. 输出产物到 `./output`，最后生成日志、ID 对照与标签统计。
 
 导出架构
-- 旧路径保留：`item` / `spell` / `bestiary` 仍由原有 manager 负责。
-- 通用 profile exporter：`src/exporters/genericProfileExporter.ts`
-  - 负责 `race`、`background`、`trap`、`hazard` 等文件型输出。
-  - 负责 `deity`、`vehicleUpgrade`、`condition`、`disease`、`language` 等 collection 型输出。
-- `class/subclass` 特例 exporter：`src/exporters/classProfileExporter.ts`
-  - 单独处理职业索引文件、子职业去重、`superiorfork` 关系和子职业列表回填。
+所有类型使用独立导出器（`src/exporters/*`），通过 `Promise.all` 并行处理提升性能：
+
+| 导出器文件                       | 负责类型                                                    |
+| --------------------------- | ------------------------------------------------------- |
+| `spellExporter.ts`          | spell                                                   |
+| `bestiaryExporter.ts`       | bestiary                                                |
+| `itemExporter.ts`           | item（baseItem + item + magicVariant）                    |
+| `raceExporter.ts`           | race                                                    |
+| `backgroundExporter.ts`     | background                                              |
+| `hazardExporter.ts`         | hazard                                                  |
+| `trapExporter.ts`           | trap                                                    |
+| `classExporter.ts`          | class / subclass                                        |
+| `adventureExporter.ts`      | adventure（生成 namelist）                                  |
+| `deityExporter.ts`          | deity                                                   |
+| `languageExporter.ts`        | language                                                |
+| `rewardExporter.ts`          | reward                                                  |
+| `psionicExporter.ts`         | psionic                                                 |
+| `recipeExporter.ts`          | recipe                                                  |
+| `homecraftExporter.ts`       | homecraft                                               |
+| `deckExporter.ts`            | deck                                                    |
+| `bastionExporter.ts`         | bastion                                                 |
+| `cultExporter.ts`            | cult                                                    |
+| `boonExporter.ts`            | boon                                                    |
+| `charOptionExporter.ts`      | charoption                                              |
+| `optionalFeatureExporter.ts`| optionalfeature                                         |
+| `genericFileExporter.ts`    | 通用 file 模式核心逻辑（供上述独立导出器调用）                             |
+| `genericProfileExporter.ts` | 其他通用类型（vehicle、vehicleUpgrade、variantrule、monsterfeature、condition、disease、skill、sense、object） |
+
 - 共享 helper：`src/exporters/shared.ts` / `src/exporters/fluff.ts`
   - 负责 ID、重印版本聚合、fluff `_copy/_mod` 继承、双语拆分与文件名去重。
 
+文件名非法字符转义表
+文件名中的非法字符会被转义为安全的字符序列（Windows 和 Linux 通用）：
+
+| 符号 | \\    | /(页面分隔符) | :     | \*    | "     | <     | >     | \|    | ?     | /(文本) |
+| -- | ----- | -------- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
+| 转义 | \_0\_ | \_1\_    | \_2\_ | \_3\_ | \_4\_ | \_5\_ | \_6\_ | \_7\_ | \_8\_ | \_9\_ |
+
 输入数据与配置
+
 - `src/config.ts` 定义：
   - `DATA_EN_DIR` 英文数据根目录（应包含 `books.json`、`items.json`、`spells/` 等）。
   - `DATA_ZH_DIR` 中文数据根目录。
@@ -36,42 +69,90 @@
   - 如果数据不在 `./input/.../data`，请手动调整 `src/config.ts`。
 - 目录清单会被 `createOutputFolders` 重置，请避免把其他文件放在 `./output` 下。
 
-输出产物
+json 输出产物（`npm run start`）：
+
 - `output/collection/bookCollection.json`
 - `output/collection/featCollection.json`
 - `output/collection/itemPropertyCollection.json`
 - `output/collection/itemTypeCollection.json`
-- `output/collection/*Collection.json`
-  - 现已覆盖 `deity`、`vehicle`、`vehicleUpgrade`、`variantrule`、`monsterfeature`、`optionalfeature`、`condition`、`disease`、`language`、`skill`、`sense`、`charoption`、`bastion`、`deck`、`cult`、`boon`、`recipe`、`reward`、`object`、`psionic`
-- `output/item/*.json`（基础物品与物品）
-- `output/spell/*.json`
-- `output/bestiary/*.json`
-- `output/race/*.json`
-- `output/background/*.json`
-- `output/trap/*.json`
-- `output/hazard/*.json`
-- `output/class/*.json`
-- `output/subclass/*.json`
+- `output/collection/itemMasteryCollection.json`
+- `output/item/{来源}/*.json`（基础物品与物品，按来源分文件夹）
+- `output/spell/{来源}/*.json`
+- `output/bestiary/{来源}/*.json`
+- `output/race/{母种族}/{来源}/*.json`
+- `output/background/{来源}/*.json`
+- `output/trap/{来源}/*.json`
+- `output/hazard/{来源}/*.json`
+- `output/class/{母职业}/{来源}/*.json`
+- `output/subclass/{来源}/*.json`
+- `output/adventure/{来源}/*.json`
+- `output/feat/{来源}/*.json`
+- `output/deity/{来源}/*.json`
+- `output/language/{来源}/*.json`
+- `output/reward/{来源}/*.json`
+- `output/psionic/{来源}/*.json`
+- `output/recipe/{来源}/*.json`
+- `output/homecraft/{来源}/*.json`
+- `output/deck/{来源}/*.json`
+- `output/bastion/{来源}/*.json`
+- `output/cult/{来源}/*.json`
+- `output/boon/{来源}/*.json`
+- `output/charoption/{来源}/*.json`
+- `output/optionalfeature/{来源}/*.json`
+- `output/vehicle/{来源}/*.json`
+- `output/vehicleUpgrade/{来源}/*.json`
+- `output/variantrule/{来源}/*.json`
+- `output/monsterfeature/{来源}/*.json`
+- `output/condition/{来源}/*.json`
+- `output/disease/{来源}/*.json`
+- `output/skill/{来源}/*.json`
+- `output/sense/{来源}/*.json`
+- `output/object/{来源}/*.json`
+- `output/tables/{来源}/*.json`（表格数据，特殊处理）
 - `output/namelist/*.json`（名字列表）
 - `output/contents/book/*.json` / `output/contents/adventure/*.json`（目录）
 - `output/logs.json`（缺失或异常记录）
 - `output/idMgr.json` / `output/idMgr.xlsx`（中英 ID 对照）
 - `output/tags.json`（解析到的 @tag 列表）
 
-大多数json结构：**类别_1_来源id_1_英文名（章节文件为章节id）.json**
+输出文件名格式：**英文名.json**（按来源分文件夹存放）
+
+Wiki 页面输出产物（`npm run page`）：
+
+- `output_page/法术/{来源}/*.wiki`
+- `output_page/物品/{来源}/*.wiki`
+- `output_page/怪物/{来源}/*.wiki`
+- `output_page/扩展/{来源}/*.wiki`
+- `output_page/模组/{来源}/*.wiki`
+- `output_page/职业/`
+   - `output_page/职业/{来源}/*.wiki`
+   - `output_page/职业/2014（或2024）/*.wiki`
+
+Wiki 文件名格式：**中文名.wiki**（按来源分文件夹存放）
 
 使用说明
+
 1. 准备 Node.js 与 git；按需执行 `npm install`（请手动执行）。
 2. 获取数据（二选一）：
    - 准备本地 data 目录并配置路径。
    - 或运行 `npm run getCnRepo` 拉取仓库数据。
+   - 运行 `npm run racetable` 补全`子种族名字替换词典.xlsx`缺失数据，然后手动补充替换项。
 3. 修改 `src/config.ts` 的 `DATA_EN_DIR` / `DATA_ZH_DIR`。
 4. 运行 `npm run start` 生成 `./output`。
 5. 查看 `output/logs.json` 与 `output/idMgr.xlsx` 定位缺失翻译或 ID 不匹配。
 6. 确认没有错误后，运行 `npm run page` 生成 `./output_page`。
+7. 运行 `npm run listFiles` 可查看`./output`与`./output_page`输出文件列表。
+
+运行日志格式
+各类型完成时输出统一格式日志：`[prepareData] {类型} 完成 ({数量})`
+
+- book、feat、itemProperty、itemMastery、itemType、spell、bestiary、item、adventure、race、background、hazard、trap、class、subclass
+- deity、vehicle、vehicleUpgrade、variantrule、monsterfeature、optionalfeature、condition、disease、language、skill、sense、charoption、bastion、deck、cult、boon、recipe、reward、object、psionic、homecraft
 
 备注
+
 - `src/getGitRepo.ts` 通过 `git clone` + `sparse-checkout` 仅下载 `data/` 与 `data-bak` 目录。
 - `src/contentGen.ts` 会把表格/列表等结构转为 HTML，并统一收集 `{@tag}` 参数。
 - `src/preprocess.ts` 未接入脚本流程，如需使用需自行调用。
 - 默认配置是相对路径，跨平台可用；如数据位置不同请改 `src/config.ts`。
+
