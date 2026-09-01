@@ -633,16 +633,15 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             for (let i = 0; i < abilityIndex; i++) {
                 item[itemEntries[i][0]] = itemEntries[i][1];
             }
-            item.raceName = superiorRaceName;
+            item.baserace = superiorRaceName;
             for (let i = abilityIndex; i < itemEntries.length; i++) {
                 item[itemEntries[i][0]] = itemEntries[i][1];
             }
         } else {
-            item.raceName = superiorRaceName;
+            item.baserace = superiorRaceName;
             Object.assign(item, itemBase);
         }
         
-        item.baserace = superiorRaceName;
         item.superiorfork = buildSuperiorfork({
             superior: superiorId,
             fork: 1,
