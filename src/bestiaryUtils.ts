@@ -5,7 +5,7 @@ import type {
 } from './types/bestiary.js';
 
 export const getBestiaryId = (monster: Pick<MonsterFileEntry, 'name' | 'ENG_name' | 'source'>) => {
-    const name = monster.ENG_name ? monster.ENG_name.trim() : monster.name.trim();
+    const name = monster.ENG_name ? monster.ENG_name.trim() : (monster.name || '').trim();
     return `${name}|${monster.source}`;
 };
 

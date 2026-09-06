@@ -16,6 +16,7 @@ import {
     resolveCaseInsensitiveOutputFileName,
     splitStructuredRecordByDiff,
 } from './shared.js';
+import { isHomebrewMode, loadHomebrewByKeys } from '../homebrewLoader.js';
 
 const readJson = async <T>(filePath: string): Promise<T> => {
     const content = await fs.readFile(filePath, 'utf-8');
@@ -57,6 +58,24 @@ const loadIndexedClassData = async () => {
         loadSet(config.DATA_EN_DIR, enIndex),
         loadSet(config.DATA_ZH_DIR, zhIndex),
     ]);
+
+    // homebrew 模式：合并 homebrew class 和 subclass 数据
+    if (isHomebrewMode) {
+        const [enHbClass, zhHbClass, enHbSub, zhHbSub] = await Promise.all([
+            loadHomebrewByKeys('en', ['class', 'classFeature']),
+            loadHomebrewByKeys('zh', ['class', 'classFeature']),
+            loadHomebrewByKeys('en', ['subclass', 'subclassFeature']),
+            loadHomebrewByKeys('zh', ['subclass', 'subclassFeature']),
+        ]);
+        if (enHbClass.class) en.class.push(...enHbClass.class);
+        if (enHbClass.classFeature) en.classFeature.push(...enHbClass.classFeature);
+        if (zhHbClass.class) zh.class.push(...zhHbClass.class);
+        if (zhHbClass.classFeature) zh.classFeature.push(...zhHbClass.classFeature);
+        if (enHbSub.subclass) en.subclass.push(...enHbSub.subclass);
+        if (enHbSub.subclassFeature) en.subclassFeature.push(...enHbSub.subclassFeature);
+        if (zhHbSub.subclass) zh.subclass.push(...zhHbSub.subclass);
+        if (zhHbSub.subclassFeature) zh.subclassFeature.push(...zhHbSub.subclassFeature);
+    }
 
     return { en, zh };
 };
@@ -740,7 +759,7 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
             item.basicRules2024 = true;
         }
         const className = (item.displayName.en || item.id.split('|')[0] || 'other').toLowerCase();
-        const sourceId = item.mainSource.source;
+        const sourceId = escapeFileName(item.mainSource.source);
         const sourceDir = path.join(classOutputDir, className, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 
@@ -770,7 +789,7 @@ export const runClassExporter = async (): Promise<ClassExporterResult> => {
         }
 
         const className = item.superiorfork?.superior?.split('|')[0]?.toLowerCase() || 'other';
-        const sourceId = item.mainSource.source;
+        const sourceId = escapeFileName(item.mainSource.source);
         const sourceDir = path.join(subclassOutputDir, className, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 

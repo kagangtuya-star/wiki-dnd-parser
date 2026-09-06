@@ -770,10 +770,15 @@ const parseSingleParagraph = (item: ParagraphContentTypes): string => {
         return parseSection(item);
     } else if (item.type === 'quote') {
         return parseQuote(item);
+    } else if ((item as any).type === 'statblock' || (item as any).type === 'statblockOwner') {
+        // homebrew 特有类型，作为段落处理
+        const name = (item as any).name || '';
+        const entries = (item as any).entries || [];
+        return `<div class="parser-statblock"><div class="parser-statblock-name">${tag(name)}</div><div class="parser-statblock-entries">${parseContent(entries)}</div></div>`;
     } else {
-        console.error(`Unknown paragraph type: ${JSON.stringify(item)}`);
-
-        throw new Error(`Unknown paragraph type`);
+        // 跳过未知类型而非抛出异常，避免 homebrew 数据阻塞流程
+        // 不输出完整 JSON 以避免大量日志影响性能
+        return '';
     }
 };
 
@@ -783,17 +788,21 @@ const parseTable = (item: ParagraphTable): string => {
     if (caption) {
         html += `<caption>${tag(caption)}</caption>`;
     }
-    html += '<tr>';
-    for (let i = 0; i < colLabels.length; i++) {
-        html += `<th class="parser-${colStyles[i]}">${tag(colLabels[i])}</th>`;
+    const labels = colLabels || [];
+    const styles = colStyles || [];
+    if (labels.length > 0) {
+        html += '<tr>';
+        for (let i = 0; i < labels.length; i++) {
+            html += `<th class="parser-${styles[i] || ''}">${tag(labels[i])}</th>`;
+        }
+        html += '</tr>';
     }
-    html += '</tr>';
-    for (const row of rows) {
+    for (const row of rows || []) {
         html += '<tr>';
         for (let i = 0; i < row.length; i++) {
             const cell = row[i];
             if (typeof cell === 'number' || typeof cell === 'string') {
-                html += `<td class="parser-${colStyles[i]}">${tag(cell)}</td>`;
+                html += `<td class="parser-${styles[i] || ''}">${tag(cell)}</td>`;
             } else if (cell && typeof cell === 'object') {
                 html += parseTableCell(cell);
             }
@@ -805,7 +814,8 @@ const parseTable = (item: ParagraphTable): string => {
 };
 const parseTableCell = (cell: ParagraphCell): string => {
     const { roll, entry } = cell;
-    return `<td class="parser-cell" data-roll="${roll.exact}">${tag(entry)}</td>`;
+    const rollExact = roll?.exact ?? '';
+    return `<td class="parser-cell" data-roll="${rollExact}">${tag(entry)}</td>`;
 };
 
 const parseInset = (item: ParaghaphInset): string => {

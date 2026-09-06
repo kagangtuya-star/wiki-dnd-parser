@@ -16,6 +16,7 @@ import {
     resolveCaseInsensitiveOutputFileName,
     splitStructuredRecordByDiff,
 } from './shared.js';
+import { isHomebrewMode, HOMEBREW_FILE_MAP, mergeHomebrewBilingual } from '../homebrewLoader.js';
 
 type LoggerLike = {
     log: (source: string, message: string) => void;
@@ -47,10 +48,19 @@ const loadBilingualFileCached = async (
 
     const enPath = path.join(config.DATA_EN_DIR, relativePath);
     const zhPath = path.join(config.DATA_ZH_DIR, relativePath);
-    const [en, zh] = await Promise.all([
+    let [en, zh] = await Promise.all([
         readJson<Record<string, any>>(enPath),
         readJson<Record<string, any>>(zhPath),
     ]);
+
+    // homebrew 模式：合并对应的 homebrew 分类数据
+    const homebrewCategories = HOMEBREW_FILE_MAP[relativePath];
+    if (isHomebrewMode && homebrewCategories) {
+        const merged = await mergeHomebrewBilingual(en, zh, homebrewCategories);
+        en = merged.en;
+        zh = merged.zh;
+    }
+
     const next = { en, zh };
     cache.set(relativePath, next);
     return next;
@@ -127,8 +137,8 @@ const writeFileOutput = async (
     const writtenFileNames = new Map<string, Set<string>>();
 
     for (const item of data) {
-        const sourceId = item.mainSource?.source;
-        if (!sourceId) {
+        const sourceId = escapeFileName(item.mainSource?.source || '');
+        if (!sourceId || sourceId === escapeFileName('')) {
             logger.log('GenericFileExporter', `缺少 source，跳过条目: ${item.id || item.displayName?.en} (${profile.dataType})`);
             continue;
         }

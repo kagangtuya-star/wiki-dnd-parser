@@ -897,7 +897,7 @@ export class WikiPageGenerator {
                 }
 
                 // 生成重定向页面
-                const redirectDir = path.join(this.classesDir, source);
+                const redirectDir = path.join(this.classesDir, this.sanitizeFileSegment(source));
                 await fs.mkdir(redirectDir, { recursive: true });
 
                 // 中文名称重定向：指向中文内容页面
@@ -930,7 +930,7 @@ export class WikiPageGenerator {
                 const mainRulesVersion = mainClassInfo.rulesVersion;
 
                 // 生成重定向页面
-                const redirectDir = path.join(this.classesDir, source);
+                const redirectDir = path.join(this.classesDir, this.sanitizeFileSegment(source));
                 await fs.mkdir(redirectDir, { recursive: true });
 
                 // 中文名称重定向：指向中文主职业页面的锚点
@@ -975,6 +975,10 @@ export class WikiPageGenerator {
             }
             return false;
         }
+
+        // 确保目录存在（处理名称中可能包含 / 的情况）
+        const dir = path.dirname(filePath);
+        await fs.mkdir(dir, { recursive: true });
 
         await fs.writeFile(filePath, normalizedContent, 'utf-8');
         this.writtenFiles.set(filePath, normalizedContent);

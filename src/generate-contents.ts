@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import config from './config.js';
+import { isHomebrewMode, loadAllHomebrewFiles } from './homebrewLoader.js';
 
 const extraConfig = {
     CONFIG_CONTENTS_DIR: './config/contents',
@@ -383,6 +384,24 @@ export const generateContents = async () => {
             loadJsonFile(extraConfig.CORE_ORDER_CONFIG).catch(() => {}),
             getLegacySources(),
         ]);
+
+        // homebrew 模式：合并 homebrew book/adventure 元数据
+        if (isHomebrewMode) {
+            const [enHbBooks, zhHbBooks, enHbAdvs, zhHbAdvs] = await Promise.all([
+                loadAllHomebrewFiles('en', ['book']),
+                loadAllHomebrewFiles('zh', ['book']),
+                loadAllHomebrewFiles('en', ['adventure']),
+                loadAllHomebrewFiles('zh', ['adventure']),
+            ]);
+            if (!booksEn.book) booksEn.book = [];
+            if (!booksZh.book) booksZh.book = [];
+            if (!adventuresEn.adventure) adventuresEn.adventure = [];
+            if (!adventuresZh.adventure) adventuresZh.adventure = [];
+            for (const f of enHbBooks) { if (f.book) booksEn.book.push(...f.book); }
+            for (const f of zhHbBooks) { if (f.book) booksZh.book.push(...f.book); }
+            for (const f of enHbAdvs) { if (f.adventure) adventuresEn.adventure.push(...f.adventure); }
+            for (const f of zhHbAdvs) { if (f.adventure) adventuresZh.adventure.push(...f.adventure); }
+        }
 
         const existingIds = new Set(existingContents.filter(f => f.endsWith('.json')).map(f => f.replace('.json', '')));
         console.log(`[generateContents] 已存在的自定义目录: ${existingIds.size} 个`);

@@ -248,7 +248,7 @@ const writeFileOutput = async (
     const writtenFileNames = new Map<string, Set<string>>();
 
     for (const item of data) {
-        const sourceId = item.mainSource.source;
+        const sourceId = escapeFileName(item.mainSource.source);
         const sourceDir = path.join(outputDir, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 

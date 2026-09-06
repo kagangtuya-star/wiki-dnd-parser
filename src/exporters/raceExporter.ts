@@ -19,6 +19,7 @@ import {
     splitStructuredRecordByDiff,
     SubraceReplacement,
 } from './shared.js';
+import { isHomebrewMode, loadHomebrewByKeys, mergeHomebrewData } from '../homebrewLoader.js';
 
 const replaceRaceLinks = (text: string, replacementMap: Map<string, SubraceReplacement>): string => {
     return text.replace(/\{@race\s+([^}\s]+)/g, (match, raceName) => {
@@ -75,10 +76,20 @@ const readJson = async <T>(filePath: string): Promise<T> => {
 };
 
 const loadRaceData = async () => {
-    const [en, zh] = await Promise.all([
+    let [en, zh] = await Promise.all([
         readJson<Record<string, any>>(path.join(config.DATA_EN_DIR, 'races.json')),
         readJson<Record<string, any>>(path.join(config.DATA_ZH_DIR, 'races.json')),
     ]);
+
+    // homebrew 模式：合并 homebrew subrace 数据
+    if (isHomebrewMode) {
+        const [enHb, zhHb] = await Promise.all([
+            loadHomebrewByKeys('en', ['subrace', 'race']),
+            loadHomebrewByKeys('zh', ['subrace', 'race']),
+        ]);
+        if (Object.keys(enHb).length > 0) en = mergeHomebrewData(en, enHb);
+        if (Object.keys(zhHb).length > 0) zh = mergeHomebrewData(zh, zhHb);
+    }
     return {
         en: {
             race: en.race || [],
@@ -259,12 +270,24 @@ const buildEntityBase = (
     normalizeReprintedAs(enItem.reprintedAs).forEach(target => relatedVersions.add(target));
     reprintMap.get(id)?.forEach(sourceId => relatedVersions.add(sourceId));
 
+    const topLevelFields = ['traitTags', 'vulnerable', 'immune', 'resist', 'creatureTypes', 'age'];
+    const topLevelExtracted: Record<string, any> = {};
+    for (const field of topLevelFields) {
+        if (enItem[field] !== undefined) {
+            topLevelExtracted[field] = enItem[field];
+        }
+        delete common[field];
+        delete enOut[field];
+        delete zhOut[field];
+    }
+
     const result: Record<string, any> = {
         dataType,
         uid: `${dataType}_${id}`,
         id,
         basicRules2024: !!(enItem.basicRules2024 || enItem.edition === 'one' || (typeof enItem.source === 'string' && enItem.source.startsWith('X'))),
         ...common,
+        ...topLevelExtracted,
         translator,
         displayName: getDisplayName(enItem, zhItem),
         mainSource: {
@@ -557,13 +580,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             id
         );
 
-        if (!raceEntityBase.en?.creatureTypes) {
-            raceEntityBase.en = raceEntityBase.en || {};
-            raceEntityBase.en.creatureTypes = ['humanoid'];
-        }
-        if (!raceEntityBase.zh?.creatureTypes) {
-            raceEntityBase.zh = raceEntityBase.zh || {};
-            raceEntityBase.zh.creatureTypes = ['类人'];
+        if (!raceEntityBase.creatureTypes) {
+            raceEntityBase.creatureTypes = ['humanoid'];
         }
 
         const raceCore: Record<string, any> = {};
@@ -613,13 +631,8 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
             baseId
         );
 
-        if (!entityBase.en?.creatureTypes) {
-            entityBase.en = entityBase.en || {};
-            entityBase.en.creatureTypes = ['humanoid'];
-        }
-        if (!entityBase.zh?.creatureTypes) {
-            entityBase.zh = entityBase.zh || {};
-            entityBase.zh.creatureTypes = ['类人'];
+        if (!entityBase.creatureTypes) {
+            entityBase.creatureTypes = ['humanoid'];
         }
 
         const itemBase: Record<string, any> = {
@@ -669,7 +682,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
 
     for (const item of raceOutput) {
         const raceName = (item.displayName.en || item.id.split('|')[0] || 'other').toLowerCase();
-        const sourceId = item.mainSource.source;
+        const sourceId = escapeFileName(item.mainSource.source);
         const sourceDir = path.join(raceOutputDir, raceName, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 
@@ -694,7 +707,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
 
     for (const item of subraceOutput) {
         const raceName = item.superiorfork?.superior?.split('|')[0]?.toLowerCase() || 'other';
-        const sourceId = item.mainSource.source;
+        const sourceId = escapeFileName(item.mainSource.source);
         const sourceDir = path.join(subraceOutputDir, raceName, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 
@@ -715,7 +728,7 @@ export const runRaceExporter = async (): Promise<RaceExporterResult> => {
 
     for (const item of subraceModOutput) {
         const raceName = item.superiorfork?.superior?.split('|')[0]?.toLowerCase() || 'other';
-        const sourceId = item.mainSource.source;
+        const sourceId = escapeFileName(item.mainSource.source);
         const sourceDir = path.join(subraceOutputDir, raceName, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 

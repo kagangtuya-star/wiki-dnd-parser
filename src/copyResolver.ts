@@ -33,14 +33,22 @@ class CopyApplier {
         return `${name.trim()}|${source}`;
     }
 
-    loadFromDirectory(dirPath: string, baseDir?: string) {
+    loadFromDirectory(dirPath: string, baseDir?: string, options?: { loadAllJson?: boolean }) {
         this.dataMap.clear();
         this.idToSource.clear();
         this.fileMap.clear();
-        return this.loadDirectoryRecursive(dirPath, baseDir || dirPath);
+        return this.loadDirectoryRecursive(dirPath, baseDir || dirPath, options);
     }
 
-    private async loadDirectoryRecursive(dirPath: string, baseDir: string): Promise<void> {
+    /**
+     * 加载参考数据目录（仅填充 dataMap/idToSource，不写入 fileMap）。
+     * 用于 homebrew _copy 解析时加载官方数据作为引用源。
+     */
+    async loadReferenceDirectory(dirPath: string, baseDir?: string, options?: { loadAllJson?: boolean }): Promise<void> {
+        return this.loadDirectoryRecursive(dirPath, baseDir || dirPath, options, false);
+    }
+
+    private async loadDirectoryRecursive(dirPath: string, baseDir: string, options?: { loadAllJson?: boolean }, addToFileMap: boolean = true): Promise<void> {
         try {
             const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
@@ -48,12 +56,12 @@ class CopyApplier {
                 const fullPath = path.join(dirPath, entry.name);
 
                 if (entry.isDirectory()) {
-                    await this.loadDirectoryRecursive(fullPath, baseDir);
+                    await this.loadDirectoryRecursive(fullPath, baseDir, options, addToFileMap);
                 } else if (entry.isFile() && entry.name.endsWith('.json')) {
                     if (entry.name === 'template.json') {
                         await this.loadTemplateFile(fullPath);
-                    } else if (entry.name.startsWith('bestiary-')) {
-                        await this.loadJsonFile(fullPath, baseDir);
+                    } else if (options?.loadAllJson || entry.name.startsWith('bestiary-')) {
+                        await this.loadJsonFile(fullPath, baseDir, addToFileMap);
                     }
                 }
             }
@@ -84,19 +92,22 @@ class CopyApplier {
         }
     }
 
-    private async loadJsonFile(filePath: string, baseDir: string): Promise<void> {
+    private async loadJsonFile(filePath: string, baseDir: string, addToFileMap: boolean = true): Promise<void> {
         try {
             const content = await fs.readFile(filePath, 'utf-8');
             const data = JSON.parse(content);
-            
-            const relativePath = path.relative(baseDir, filePath);
-            this.fileMap.set(relativePath, data);
 
-            const dataKeys = Object.keys(data);
-            const primaryKey = this.findPrimaryDataKey(dataKeys);
+            if (addToFileMap) {
+                const relativePath = path.relative(baseDir, filePath);
+                this.fileMap.set(relativePath, data);
+            }
 
-            if (primaryKey && Array.isArray(data[primaryKey])) {
-                for (const item of data[primaryKey]) {
+            // 加载文件内所有数据数组（跳过 _meta 等下划线前缀键）
+            for (const key of Object.keys(data)) {
+                if (key.startsWith('_')) continue;
+                if (!Array.isArray(data[key])) continue;
+
+                for (const item of data[key]) {
                     if (item.name && item.source) {
                         const id = this.getId(item.name, item.source);
                         this.dataMap.set(id, item);
@@ -166,7 +177,7 @@ class CopyApplier {
         const copyId = this.getId(copy.ENG_name || copy.name, copy.source);
         
         if (this.visited.has(copyId)) {
-            console.warn(`Circular copy reference detected: ${copyId}`);
+            // console.warn(`Circular copy reference detected: ${copyId}`);
             return;
         }
 
@@ -1058,6 +1069,40 @@ export async function resolveCopiesInBothDirectories(
 
     // console.log('\nProcessing Chinese data...');
     await resolveCopiesInDirectory(zhInputDir, zhOutputDir);
+}
+
+/**
+ * 解析 homebrew 数据目录中的 _copy 引用。
+ * 先加载官方数据作为引用源（不写入 fileMap），再加载 homebrew 数据，
+ * 解析后仅保存 homebrew 文件。
+ */
+export async function resolveCopiesInHomebrewDirectories(
+    enMainDataDir: string,
+    zhMainDataDir: string,
+    enHomebrewDataDir: string,
+    zhHomebrewDataDir: string
+): Promise<void> {
+    // 处理英文 homebrew
+    const enApplier = new CopyApplier();
+    await enApplier.loadFromDirectory(enHomebrewDataDir, enHomebrewDataDir, { loadAllJson: true });
+    try {
+        await enApplier.loadReferenceDirectory(enMainDataDir, enMainDataDir, { loadAllJson: true });
+    } catch {
+        console.warn('无法加载英文官方数据作为引用源，仅解析 homebrew 内部 _copy 引用');
+    }
+    enApplier.resolveAllCopies();
+    await enApplier.saveResolvedData(enHomebrewDataDir);
+
+    // 处理中文 homebrew
+    const zhApplier = new CopyApplier();
+    await zhApplier.loadFromDirectory(zhHomebrewDataDir, zhHomebrewDataDir, { loadAllJson: true });
+    try {
+        await zhApplier.loadReferenceDirectory(zhMainDataDir, zhMainDataDir, { loadAllJson: true });
+    } catch {
+        console.warn('无法加载中文官方数据作为引用源，仅解析 homebrew 内部 _copy 引用');
+    }
+    zhApplier.resolveAllCopies();
+    await zhApplier.saveResolvedData(zhHomebrewDataDir);
 }
 
 export default CopyApplier;

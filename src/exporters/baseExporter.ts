@@ -15,6 +15,7 @@ import {
     resolveCaseInsensitiveOutputFileName,
     splitStructuredRecordByDiff,
 } from './shared.js';
+import { isHomebrewMode, HOMEBREW_FILE_MAP, mergeHomebrewBilingual } from '../homebrewLoader.js';
 
 export interface ExportItem {
     dataType: string;
@@ -63,10 +64,19 @@ const loadBilingualFileCached = async (
 
     const enPath = path.join(config.DATA_EN_DIR, relativePath);
     const zhPath = path.join(config.DATA_ZH_DIR, relativePath);
-    const [en, zh] = await Promise.all([
+    let [en, zh] = await Promise.all([
         readJson<Record<string, any>>(enPath),
         readJson<Record<string, any>>(zhPath),
     ]);
+
+    // homebrew 模式：合并对应的 homebrew 分类数据
+    const homebrewCategories = HOMEBREW_FILE_MAP[relativePath];
+    if (isHomebrewMode && homebrewCategories) {
+        const merged = await mergeHomebrewBilingual(en, zh, homebrewCategories);
+        en = merged.en;
+        zh = merged.zh;
+    }
+
     const next = { en, zh };
     cache.set(relativePath, next);
     return next;
@@ -238,7 +248,7 @@ export class BaseExporter {
         const writtenFileNames = new Map<string, Set<string>>();
 
         for (const item of outputData) {
-            const sourceId = item.mainSource.source;
+            const sourceId = escapeFileName(item.mainSource.source);
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 

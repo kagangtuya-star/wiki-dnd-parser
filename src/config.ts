@@ -4,6 +4,8 @@ import path from 'path';
 const config = {
     DATA_EN_DIR: './input/5e-en/data',
     DATA_ZH_DIR: './input/5e-cn/data',
+    HOMEBREW_EN_DIR: './input/5e-en/homebrew',
+    HOMEBREW_ZH_DIR: './input/5e-cn/homebrew',
 };
 
 export const loadFile = async <T = any>(filePath: string): Promise<{ en: T; zh: T }> => {

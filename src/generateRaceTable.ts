@@ -1,6 +1,7 @@
 import XLSX from 'xlsx';
 import path from 'path';
 import { promises as fs } from 'fs';
+import { isHomebrewMode, loadHomebrewByKeys } from './homebrewLoader.js';
 
 interface SubraceFromInput {
     raceName: string;
@@ -28,10 +29,18 @@ const loadRaceData = async (): Promise<{ race: any[]; subrace: any[] }> => {
     const filePath = path.join(process.cwd(), 'input/5e-cn/data/races.json');
     const content = await fs.readFile(filePath, 'utf-8');
     const data = JSON.parse(content);
-    return {
-        race: data.race || [],
-        subrace: data.subrace || [],
-    };
+
+    let race = data.race || [];
+    let subrace = data.subrace || [];
+
+    // homebrew 模式：合并 homebrew subrace 数据
+    if (isHomebrewMode) {
+        const zhHb = await loadHomebrewByKeys('zh', ['subrace', 'race']);
+        if (zhHb.subrace) subrace = [...subrace, ...zhHb.subrace];
+        if (zhHb.race) race = [...race, ...zhHb.race];
+    }
+
+    return { race, subrace };
 };
 
 const loadXlsxData = (): { workbook: XLSX.WorkBook; sheetName: string; rows: SubraceFromXlsx[] } => {

@@ -8,6 +8,7 @@
   `src/wikiPageGenerator.ts`（`npm run page`，根据 `./output` 目录下输出的 JSON 文件，生成对应的 wiki 内容页面）
   `src/list-files.ts`（`npm run listFiles`，输出output跟page文件对应页面名的收集表格）
   `src/generateRaceTable.ts`（`npm run racetable`，补全`子种族名字替换词典.xlsx`缺失数据）
+- 所有脚本均提供 `:homebrew` 后缀版本（如 `npm run start:homebrew`），用于处理第三方自制（homebrew）数据。
 
 运行逻辑概览
 
@@ -21,31 +22,31 @@
 导出架构
 所有类型使用独立导出器（`src/exporters/*`），通过 `Promise.all` 并行处理提升性能：
 
-| 导出器文件                       | 负责类型                                                    |
-| --------------------------- | ------------------------------------------------------- |
-| `spellExporter.ts`          | spell                                                   |
-| `bestiaryExporter.ts`       | bestiary                                                |
-| `itemExporter.ts`           | item（baseItem + item + magicVariant）                    |
-| `raceExporter.ts`           | race                                                    |
-| `backgroundExporter.ts`     | background                                              |
-| `hazardExporter.ts`         | hazard                                                  |
-| `trapExporter.ts`           | trap                                                    |
-| `classExporter.ts`          | class / subclass                                        |
-| `adventureExporter.ts`      | adventure（生成 namelist）                                  |
-| `deityExporter.ts`          | deity                                                   |
-| `languageExporter.ts`        | language                                                |
-| `rewardExporter.ts`          | reward                                                  |
-| `psionicExporter.ts`         | psionic                                                 |
-| `recipeExporter.ts`          | recipe                                                  |
-| `homecraftExporter.ts`       | homecraft                                               |
-| `deckExporter.ts`            | deck                                                    |
-| `bastionExporter.ts`         | bastion                                                 |
-| `cultExporter.ts`            | cult                                                    |
-| `boonExporter.ts`            | boon                                                    |
-| `charOptionExporter.ts`      | charoption                                              |
-| `optionalFeatureExporter.ts`| optionalfeature                                         |
-| `genericFileExporter.ts`    | 通用 file 模式核心逻辑（供上述独立导出器调用）                             |
-| `genericProfileExporter.ts` | 其他通用类型（vehicle、vehicleUpgrade、variantrule、monsterfeature、condition、disease、skill、sense、object） |
+| 导出器文件                        | 负责类型                                                                                           |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| `spellExporter.ts`           | spell                                                                                          |
+| `bestiaryExporter.ts`        | bestiary                                                                                       |
+| `itemExporter.ts`            | item（baseItem + item + magicVariant）                                                           |
+| `raceExporter.ts`            | race                                                                                           |
+| `backgroundExporter.ts`      | background                                                                                     |
+| `hazardExporter.ts`          | hazard                                                                                         |
+| `trapExporter.ts`            | trap                                                                                           |
+| `classExporter.ts`           | class / subclass                                                                               |
+| `adventureExporter.ts`       | adventure（生成 namelist）                                                                         |
+| `deityExporter.ts`           | deity                                                                                          |
+| `languageExporter.ts`        | language                                                                                       |
+| `rewardExporter.ts`          | reward                                                                                         |
+| `psionicExporter.ts`         | psionic                                                                                        |
+| `recipeExporter.ts`          | recipe                                                                                         |
+| `homecraftExporter.ts`       | homecraft                                                                                      |
+| `deckExporter.ts`            | deck                                                                                           |
+| `bastionExporter.ts`         | bastion                                                                                        |
+| `cultExporter.ts`            | cult                                                                                           |
+| `boonExporter.ts`            | boon                                                                                           |
+| `charOptionExporter.ts`      | charoption                                                                                     |
+| `optionalFeatureExporter.ts` | optionalfeature                                                                                |
+| `genericFileExporter.ts`     | 通用 file 模式核心逻辑（供上述独立导出器调用）                                                                     |
+| `genericProfileExporter.ts`  | 其他通用类型（vehicle、vehicleUpgrade、variantrule、monsterfeature、condition、disease、skill、sense、object） |
 
 - 共享 helper：`src/exporters/shared.ts` / `src/exporters/fluff.ts`
   - 负责 ID、重印版本聚合、fluff `_copy/_mod` 继承、双语拆分与文件名去重。
@@ -125,23 +126,62 @@ Wiki 页面输出产物（`npm run page`）：
 - `output_page/扩展/{来源}/*.wiki`
 - `output_page/模组/{来源}/*.wiki`
 - `output_page/职业/`
-   - `output_page/职业/{来源}/*.wiki`
-   - `output_page/职业/2014（或2024）/*.wiki`
+  - `output_page/职业/{来源}/*.wiki`
+  - `output_page/职业/2014（或2024）/*.wiki`
 
 Wiki 文件名格式：**中文名.wiki**（按来源分文件夹存放）
 
 使用说明
 
 1. 准备 Node.js 与 git；按需执行 `npm install`（请手动执行）。
-2. 获取数据（二选一）：
-   - 准备本地 data 目录并配置路径。
-   - 或运行 `npm run getCnRepo` 拉取仓库数据。
+2. 获取数据（二选一，也可同时执行）：
+   - **官方数据**：运行 `npm run getCnRepo` 拉取官方仓库数据（中英文）。
+   - **自制（homebrew）数据**：运行 `npm run getCnRepo:homebrew` 拉取 homebrew 仓库数据（见下方 Homebrew 模式说明）。
    - 运行 `npm run racetable` 补全`子种族名字替换词典.xlsx`缺失数据，然后手动补充替换项。
 3. 修改 `src/config.ts` 的 `DATA_EN_DIR` / `DATA_ZH_DIR`。
-4. 运行 `npm run start` 生成 `./output`。
+4. 运行 `npm run start` 生成 `./output`（如需合并 homebrew 数据，使用 `npm run start:homebrew`）。
 5. 查看 `output/logs.json` 与 `output/idMgr.xlsx` 定位缺失翻译或 ID 不匹配。
-6. 确认没有错误后，运行 `npm run page` 生成 `./output_page`。
+6. 确认没有错误后，运行 `npm run page` 生成 `./output_page`（homebrew 模式：`npm run page:homebrew`）。
 7. 运行 `npm run listFiles` 可查看`./output`与`./output_page`输出文件列表。
+
+---
+### Homebrew 模式（`*:homebrew` 指令）
+
+项目支持处理 5etools 生态的第三方自制（homebrew）数据，所有核心指令均提供 `:homebrew` 后缀版本。homebrew 数据仓库来自 [TheGiddyLimit/homebrew](https://github.com/TheGiddyLimit/homebrew)（英文）和 [tjliqy/homebrew](https://github.com/tjliqy/homebrew)（中文翻译），数据存放于 `./input/5e-en/homebrew` 和 `./input/5e-cn/homebrew`。
+
+#### 指令对照表
+
+| 指令 | 对应脚本 | 作用（相对基础版本的差异） |
+| --- | ------- | ------------------------ |
+| `npm run getCnRepo:homebrew` | `getGitRepo.ts --homebrew` | 拉取 homebrew 仓库数据（blobless clone + sparse-checkout 仅下载 JSON）；生成 `replace-logs-homebrew.json` 跟踪变更；**解析 `_copy` 引用**（解析 homebrew 引用的官方数据）；**重组 collection 数据**（将 collection 目录下的 JSON 数组按类型剪切到对应类别目录，如 `spell/`、`item/`、`creature/` 等） |
+| `npm run start:homebrew` | `prepareData.ts --homebrew` | 在加载官方数据时，自动从 `HOMEBREW_EN_DIR`/`HOMEBREW_ZH_DIR` 加载对应的 homebrew 分类数据并合并到各导出器处理 |
+| `npm run page:homebrew` | `prepareData.ts --page --homebrew` + `generateBookPages.ts` | 先生成含 homebrew 数据的 JSON 输出，再生成对应的 Wiki 页面（包含 homebrew 内容） |
+| `npm run generateContents:homebrew` | `generate-contents.ts --homebrew` | 合并 homebrew 的 book/adventure 元数据到出版物目录 `output/contents/` |
+| `npm run splitBooks:homebrew` | `split-books.ts --homebrew` | 加载 homebrew 的 book/adventure 数据（含 book data 内容）到分割处理中 |
+| `npm run racetable:homebrew` | `generateRaceTable.ts --homebrew` | 合并 homebrew 的 subrace/race 数据到`子种族名字替换词典.xlsx` |
+
+#### `npm run getCnRepo:homebrew` 详细流程
+
+1. **克隆仓库**：使用 `git clone --depth 2 --filter=blob:none --no-checkout` 进行 blobless 克隆，仅下载 tree 元数据
+2. **稀疏签出**：通过 `sparse-checkout --no-cone` 仅签出 `*.json` 文件，跳过非 JSON 资源
+3. **生成变更日志**：对比最近两次 commit，生成 `replace-logs-homebrew.json`（记录增删改的文件与数组）
+4. **解析 `_copy` 引用**：homebrew 数据中常使用 `_copy` 机制引用官方数据，此步骤会解析并合并这些引用，确保 homebrew 数据完整可用
+5. **重组 collection 数据**：将 collection 目录下分散的 JSON 数组按 `KEY_TO_DIR` 映射剪切到对应类别目录（如 `spell`、`item`、`creature`、`race`、`class` 等 50+ 种类型），后续 `start:homebrew` 扫描类别目录即可直接加载，无需额外处理 collection
+
+#### Homebrew 数据合并机制
+
+- `src/homebrewLoader.ts` 是 homebrew 模式的核心加载模块
+- 通过 `loadHomebrewByKeys(locale, keys)` 按需加载指定类型（如 `['spell']`、`['monster']`）的数据
+- 支持目录名异常映射（如 `monster` 键对应 `creature/` 目录，`boon` 对应 `boon/` 和 `cultboon/` 目录）
+- 数据缓存机制：同一键的多次调用直接从内存缓存返回
+- 通过 `mergeHomebrewBilingual()` 自动合并中英文 homebrew 数据到官方数据中
+
+#### 配置项（`src/config.ts`）
+
+```
+HOMEBREW_EN_DIR: './input/5e-en/homebrew'   // 英文 homebrew 数据目录
+HOMEBREW_ZH_DIR: './input/5e-cn/homebrew'   // 中文 homebrew 数据目录
+```
 
 运行日志格式
 各类型完成时输出统一格式日志：`[prepareData] {类型} 完成 ({数量})`
@@ -155,4 +195,3 @@ Wiki 文件名格式：**中文名.wiki**（按来源分文件夹存放）
 - `src/contentGen.ts` 会把表格/列表等结构转为 HTML，并统一收集 `{@tag}` 参数。
 - `src/preprocess.ts` 未接入脚本流程，如需使用需自行调用。
 - 默认配置是相对路径，跨平台可用；如数据位置不同请改 `src/config.ts`。
-

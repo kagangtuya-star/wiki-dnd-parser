@@ -132,11 +132,12 @@ const writeFileOutput = async (
     const writtenFileNames = new Map<string, Set<string>>();
 
     for (const item of data) {
-        const sourceId = item.mainSource?.source;
-        if (!sourceId) {
+        const rawSourceId = item.mainSource?.source;
+        if (!rawSourceId) {
             logger.log('GenericProfileExporter', `缺少 source，跳过条目: ${item.id || item.displayName?.en} (${profile.dataType})`);
             continue;
         }
+        const sourceId = escapeFileName(rawSourceId);
         const sourceDir = path.join(outputDir, sourceId);
         await fs.mkdir(sourceDir, { recursive: true });
 

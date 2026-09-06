@@ -1183,7 +1183,7 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
 
         // for each item in the db, write a file.
         for (const [id, itemData] of this.db) {
-            const sourceId = itemData.mainSource.source;
+            const sourceId = escapeFileName(itemData.mainSource.source);
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
@@ -1446,7 +1446,7 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
         const outputDir = './output/item';
 
         for (const [id, itemData] of this.db) {
-            const sourceId = itemData.mainSource.source;
+            const sourceId = escapeFileName(itemData.mainSource.source);
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
@@ -1710,7 +1710,7 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
         const outputDir = './output/item';
 
         for (const [id, itemData] of this.db) {
-            const sourceId = itemData.mainSource.source;
+            const sourceId = escapeFileName(itemData.mainSource.source);
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
@@ -1969,7 +1969,7 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
         const outputDir = './output/spell';
 
         for (const [id, spellData] of this.db) {
-            const sourceId = spellData.mainSource.source;
+            const sourceId = escapeFileName(spellData.mainSource.source);
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 

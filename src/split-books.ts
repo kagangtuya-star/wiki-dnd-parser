@@ -179,19 +179,21 @@ const buildNameToIdMap = (data: any[]): Map<string, string> => {
     return map;
 };
 
+import { isHomebrewMode, loadAllHomebrewFiles } from './homebrewLoader.js';
+
+// homebrew 书籍/冒险内容缓存：bookId → { en: data[], zh: data[] }
+const homebrewContentMap = new Map<string, { en: any[] | null; zh: any[] | null }>();
+
 const loadBookContentFile = async (bookId: string, type: 'book' | 'adventure'): Promise<{
     zh: any[] | null;
     en: any[] | null;
 }> => {
+    if (!bookId) return { zh: null, en: null };
     const baseFileName = type === 'adventure' ? 'adventure-' : 'book-';
     const fileName = baseFileName + bookId.toLowerCase() + '.json';
 
     const enPath = path.join(config.DATA_EN_DIR, type, fileName);
     const zhPath = path.join(config.DATA_ZH_DIR, type, fileName);
-
-    // console.log(`[loadBookContentFile] 加载 ${type} ${bookId}:`);
-    // console.log(`[loadBookContentFile] 英文路径: ${enPath}`);
-    // console.log(`[loadBookContentFile] 中文路径: ${zhPath}`);
 
     let enData: any[] | null = null;
     let zhData: any[] | null = null;
@@ -200,18 +202,25 @@ const loadBookContentFile = async (bookId: string, type: 'book' | 'adventure'): 
         const enContent = await fs.readFile(enPath, 'utf-8');
         const parsed = JSON.parse(enContent).data;
         enData = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
-        // console.log(`[loadBookContentFile] 英文数据加载成功，共 ${enData.length} 条`);
     } catch (e) {
-        // console.log(`[loadBookContentFile] 英文数据加载失败: ${e}`);
+        // 官方文件不存在
     }
 
     try {
         const zhContent = await fs.readFile(zhPath, 'utf-8');
         const parsed = JSON.parse(zhContent).data;
         zhData = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
-        // console.log(`[loadBookContentFile] 中文数据加载成功，共 ${zhData.length} 条`);
     } catch (e) {
-        // console.log(`[loadBookContentFile] 中文数据加载失败: ${e}`);
+        // 官方文件不存在
+    }
+
+    // homebrew 回退：从 homebrew 内容缓存中获取
+    if (isHomebrewMode) {
+        const hbContent = homebrewContentMap.get(bookId);
+        if (hbContent) {
+            if (!enData && hbContent.en) enData = hbContent.en;
+            if (!zhData && hbContent.zh) zhData = hbContent.zh;
+        }
     }
 
     return { zh: zhData, en: enData };
@@ -997,48 +1006,104 @@ const processSingleBook = async (
 const loadBooksJson = async (): Promise<{ en: any[]; zh: any[] }> => {
     const enPath = path.join(config.DATA_EN_DIR, 'books.json');
     const zhPath = path.join(config.DATA_ZH_DIR, 'books.json');
-    
+
     let enData: any[] = [];
     let zhData: any[] = [];
-    
+
     try {
         const enContent = await fs.readFile(enPath, 'utf-8');
         enData = JSON.parse(enContent).book || [];
     } catch (e) {
         // 英文 books.json 不存在
     }
-    
+
     try {
         const zhContent = await fs.readFile(zhPath, 'utf-8');
         zhData = JSON.parse(zhContent).book || [];
     } catch (e) {
         // 中文 books.json 不存在
     }
-    
+
+    // homebrew 模式：加载 homebrew book 数据
+    if (isHomebrewMode) {
+        const [enHbFiles, zhHbFiles] = await Promise.all([
+            loadAllHomebrewFiles('en', ['book']),
+            loadAllHomebrewFiles('zh', ['book']),
+        ]);
+        for (const file of enHbFiles) {
+            for (const book of file.book || []) {
+                enData.push(book);
+                if (book.id && book.data) {
+                    const entry = homebrewContentMap.get(book.id) || { en: null, zh: null };
+                    entry.en = Array.isArray(book.data) ? book.data : [book.data];
+                    homebrewContentMap.set(book.id, entry);
+                }
+            }
+        }
+        for (const file of zhHbFiles) {
+            for (const book of file.book || []) {
+                zhData.push(book);
+                if (book.id && book.data) {
+                    const entry = homebrewContentMap.get(book.id) || { en: null, zh: null };
+                    entry.zh = Array.isArray(book.data) ? book.data : [book.data];
+                    homebrewContentMap.set(book.id, entry);
+                }
+            }
+        }
+    }
+
     return { en: enData, zh: zhData };
 };
 
 const loadAdventuresJson = async (): Promise<{ en: any[]; zh: any[] }> => {
     const enPath = path.join(config.DATA_EN_DIR, 'adventures.json');
     const zhPath = path.join(config.DATA_ZH_DIR, 'adventures.json');
-    
+
     let enData: any[] = [];
     let zhData: any[] = [];
-    
+
     try {
         const enContent = await fs.readFile(enPath, 'utf-8');
         enData = JSON.parse(enContent).adventure || [];
     } catch (e) {
         // 英文 adventures.json 不存在
     }
-    
+
     try {
         const zhContent = await fs.readFile(zhPath, 'utf-8');
         zhData = JSON.parse(zhContent).adventure || [];
     } catch (e) {
         // 中文 adventures.json 不存在
     }
-    
+
+    // homebrew 模式：加载 homebrew adventure 数据
+    if (isHomebrewMode) {
+        const [enHbFiles, zhHbFiles] = await Promise.all([
+            loadAllHomebrewFiles('en', ['adventure']),
+            loadAllHomebrewFiles('zh', ['adventure']),
+        ]);
+        for (const file of enHbFiles) {
+            for (const adv of file.adventure || []) {
+                enData.push(adv);
+                if (adv.id && adv.data) {
+                    const entry = homebrewContentMap.get(adv.id) || { en: null, zh: null };
+                    entry.en = Array.isArray(adv.data) ? adv.data : [adv.data];
+                    homebrewContentMap.set(adv.id, entry);
+                }
+            }
+        }
+        for (const file of zhHbFiles) {
+            for (const adv of file.adventure || []) {
+                zhData.push(adv);
+                if (adv.id && adv.data) {
+                    const entry = homebrewContentMap.get(adv.id) || { en: null, zh: null };
+                    entry.zh = Array.isArray(adv.data) ? adv.data : [adv.data];
+                    homebrewContentMap.set(adv.id, entry);
+                }
+            }
+        }
+    }
+
     return { en: enData, zh: zhData };
 };
 

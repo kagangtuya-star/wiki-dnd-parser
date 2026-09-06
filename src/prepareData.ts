@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import {
     BookContents,
     BookFile,
     BookFileEntry,
@@ -10,6 +10,17 @@ import { promises as fs } from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import chalk from 'chalk';
+
+// 全局错误处理：捕获未处理的 Promise 拒绝和异常
+process.on('unhandledRejection', (reason: any) => {
+    console.error('[Unhandled Rejection]', reason);
+    process.exit(1);
+});
+
+process.on('uncaughtException', (error: Error) => {
+    console.error('[Uncaught Exception]', error);
+    process.exit(1);
+});
 import { FeatFile, FeatFileEntry, WikiFeatData, WikiFeatEntry } from './types/feat';
 import {
     ItemBaseFile,
@@ -77,6 +88,7 @@ import { runFeatExporter } from './exporters/featExporter.js';
 import { escapeFileName, loadSubraceReplacementByNameMap, sectionTextIdMap, SubraceReplacement } from './exporters/shared.js';
 import { generateContents } from './generate-contents.js';
 import { splitBooks } from './split-books.js';
+import { isHomebrewMode, mergeHomebrewBilingual, loadHomebrewByKeys, mergeHomebrewData, HOMEBREW_FILE_MAP } from './homebrewLoader.js';
 
 interface InputChangedArray {
     name: string;
@@ -1039,7 +1051,8 @@ class ItemFluffMgr {
     ): string | undefined {
         const source = entry.source || fallbackSource;
         if (!source) return undefined;
-        const name = entry.ENG_name ? entry.ENG_name.trim() : entry.name.trim();
+        const name = entry.ENG_name ? entry.ENG_name.trim() : (entry.name || '').trim();
+        if (!name) return undefined;
         return `${name}|${source}`;
     }
 
@@ -1145,29 +1158,36 @@ class IdMgr {
             matched: [],
         };
         const dataSet = this.dataset[dataType];
-        const enIds = data.en.map(fn.getId);
-        const zhIds = data.zh.map(fn.getId);
+
+        // 使用 Map 加速查找，避免 O(n²)
+        const enMap = new Map<string, T>();
+        const zhMap = new Map<string, T>();
+        for (const item of data.en) enMap.set(fn.getId(item), item);
+        for (const item of data.zh) zhMap.set(fn.getId(item), item);
+        const enIds = enMap.keys();
+        const zhIdSet = new Set(zhMap.keys());
+        const enIdSet = new Set(enMap.keys());
+
         for (const enId of enIds) {
-            if (!zhIds.includes(enId)) {
+            if (!zhIdSet.has(enId)) {
                 dataSet.needZh.push({
                     id: enId,
-                    en: fn.getEnTitle(data.en.find(item => fn.getId(item) === enId)!),
+                    en: fn.getEnTitle(enMap.get(enId)!),
                     zh: null,
                 });
             }
         }
-        for (const zhId of zhIds) {
-            if (!enIds.includes(zhId)) {
+        for (const zhId of zhMap.keys()) {
+            if (!enIdSet.has(zhId)) {
                 dataSet.needEn.push({
                     id: zhId,
                     en: null,
-                    zh: fn.getZhTitle(data.zh.find(item => fn.getId(item) === zhId)!),
+                    zh: fn.getZhTitle(zhMap.get(zhId)!),
                 });
             }
         }
-        for (const enItem of data.en) {
-            const enId = fn.getId(enItem);
-            const zhItem = data.zh.find(item => fn.getId(item) === enId);
+        for (const [enId, enItem] of enMap) {
+            const zhItem = zhMap.get(enId);
             if (zhItem) {
                 dataSet.matched.push({
                     id: enId,
@@ -1341,7 +1361,7 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
 
     constructor() { }
     getId(feat: FeatFileEntry): string {
-        const name = feat.ENG_name ? feat.ENG_name.trim() : feat.name.trim();
+        const name = feat.ENG_name ? feat.ENG_name.trim() : (feat.name || '').trim();
         return `${name}|${feat.source}`;
     }
     loadData(zh: FeatFile, en: FeatFile) {
@@ -1537,7 +1557,7 @@ class FeatMgr implements DataMgr<FeatFileEntry> {
 
         const outputDir = './output/feat';
         for (const [id, featData] of this.db) {
-            const sourceId = featData.mainSource.source;
+            const sourceId = escapeFileName(featData.mainSource.source);
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
@@ -1910,7 +1930,7 @@ class ItemMasteryMgr implements DataMgr<ItemMastery> {
     db: Map<string, WikiItemMasteryData> = new Map();
     constructor() { }
     getId(item: ItemMastery) {
-        const name = item.ENG_name ? item.ENG_name.trim() : item.name.trim();
+        const name = item.ENG_name ? item.ENG_name.trim() : (item.name || '').trim();
         return `${name}|${item.source}`;
     }
     loadData(zh: ItemBaseFile, en: ItemBaseFile) {
@@ -1998,6 +2018,9 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
     getId(item: ItemFileEntry): string {
         if (item.ENG_name) {
             return `${item.ENG_name.trim()}|${item.source}`;
+        }
+        if (!item.name) {
+            return `unnamed|${item.source || 'unknown'}`;
         }
         return `${item.name.trim()}|${item.source}`;
     }
@@ -2320,7 +2343,9 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
                 displayName: {
                     zh: (() => {
                         if (!zhItem) return null;
-                        if (zhItem.name.trim() === enItem.name.trim()) return null;
+                        const zhName = zhItem.name || '';
+                        const enName = enItem.name || '';
+                        if (zhName.trim() === enName.trim()) return null;
                         return zhItem.name;
                     })(),
                     en: enItem.name,
@@ -2358,15 +2383,17 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
     }
     async generateFiles() {
         const outputDir = './output/item';
+        const writeTasks: { filePath: string; content: string; trackPath: string; sourceId: string; uid: string }[] = [];
+        const dirsToCreate = new Set<string>();
 
         // for each item in the db, write a file.
         for (const [id, itemData] of this.db) {
             const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
             ));
-            const sourceId = itemData.mainSource?.source || 'UNKNOWN';
+            const sourceId = escapeFileName(itemData.mainSource?.source || 'UNKNOWN');
             const sourceDir = path.join(outputDir, sourceId);
-            await fs.mkdir(sourceDir, { recursive: true });
+            dirsToCreate.add(sourceDir);
             
             const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
@@ -2425,8 +2452,28 @@ class BaseItemMgr implements DataMgr<ItemFileEntry> {
             // 替换 {=bonusWeapon} 和 {=bonusWeaponDamage} 为 {@bonusweapon +数值}
             const finalProcessedData = processBonusReplacements(reorderedData);
 
-            await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
-            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
+            writeTasks.push({
+                filePath,
+                content: JSON.stringify(finalProcessedData, null, 2),
+                trackPath: `item/${sourceId}/${fileName}`,
+                sourceId,
+                uid: id,
+            });
+        }
+
+        // 预创建所有目录
+        for (const dir of dirsToCreate) {
+            await fs.mkdir(dir, { recursive: true });
+        }
+
+        // 分批并行写入文件（每批 100 个）
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < writeTasks.length; i += BATCH_SIZE) {
+            const batch = writeTasks.slice(i, i + BATCH_SIZE);
+            await Promise.all(batch.map(task =>
+                fs.writeFile(task.filePath, task.content, 'utf-8')
+                    .then(() => trackOutputFile(task.trackPath, 'item', task.sourceId, task.uid))
+            ));
         }
     }
 
@@ -2543,6 +2590,9 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
     getId(item: ItemFileEntry): string {
         if (item.ENG_name) {
             return `${item.ENG_name.trim()}|${item.source}`;
+        }
+        if (!item.name) {
+            return `unnamed|${item.source || 'unknown'}`;
         }
         return `${item.name.trim()}|${item.source}`;
     }
@@ -2861,7 +2911,9 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
                 displayName: {
                     zh: (() => {
                         if (!zhItem) return null;
-                        if (zhItem.name.trim() === enItem.name.trim()) return null;
+                        const zhName = zhItem.name || '';
+                        const enName = enItem.name || '';
+                        if (zhName.trim() === enName.trim()) return null;
                         return zhItem.name;
                     })(),
                     en: enItem.name,
@@ -2920,14 +2972,16 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
     }
     async generateFiles() {
         const outputDir = './output/item';
+        const writeTasks: { filePath: string; content: string; trackPath: string; sourceId: string; uid: string }[] = [];
+        const dirsToCreate = new Set<string>();
 
         for (const [id, itemData] of this.db) {
             const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
             ));
-            const sourceId = itemData.mainSource?.source || 'UNKNOWN';
+            const sourceId = escapeFileName(itemData.mainSource?.source || 'UNKNOWN');
             const sourceDir = path.join(outputDir, sourceId);
-            await fs.mkdir(sourceDir, { recursive: true });
+            dirsToCreate.add(sourceDir);
             
             const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
@@ -3031,8 +3085,28 @@ class ItemMgr implements DataMgr<ItemFileEntry> {
             // 替换 {=bonusWeapon} 和 {=bonusWeaponDamage} 为 {@bonusweapon +数值}
             const finalProcessedData = processBonusReplacements(reorderedData);
 
-            await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
-            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
+            writeTasks.push({
+                filePath,
+                content: JSON.stringify(finalProcessedData, null, 2),
+                trackPath: `item/${sourceId}/${fileName}`,
+                sourceId,
+                uid: id,
+            });
+        }
+
+        // 预创建所有目录
+        for (const dir of dirsToCreate) {
+            await fs.mkdir(dir, { recursive: true });
+        }
+
+        // 分批并行写入文件（每批 100 个）
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < writeTasks.length; i += BATCH_SIZE) {
+            const batch = writeTasks.slice(i, i + BATCH_SIZE);
+            await Promise.all(batch.map(task =>
+                fs.writeFile(task.filePath, task.content, 'utf-8')
+                    .then(() => trackOutputFile(task.trackPath, 'item', task.sourceId, task.uid))
+            ));
         }
     }
 
@@ -3742,7 +3816,7 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
                     derivedNameEn,
                     source,
                     page,
-                    `${baseEn.name.toLowerCase()}|${String(baseEn.source || '').toLowerCase()}`
+                    `${String(baseEn.name || '').toLowerCase()}|${String(baseEn.source || '').toLowerCase()}`
                 );
                 const mergedZh = baseZh
                     ? this.mergeVariantWithBase(
@@ -3803,14 +3877,16 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
 
     async generateFiles() {
         const outputDir = './output/item';
+        const writeTasks: { filePath: string; content: string; trackPath: string; sourceId: string; uid: string }[] = [];
+        const dirsToCreate = new Set<string>();
 
         for (const [id, itemData] of this.db) {
             const baseName = escapeFileName(mwUtil.getMwTitle(
                 itemData.displayName.en || itemData.displayName.zh || id
             ));
-            const sourceId = itemData.mainSource?.source || 'UNKNOWN';
+            const sourceId = escapeFileName(itemData.mainSource?.source || 'UNKNOWN');
             const sourceDir = path.join(outputDir, sourceId);
-            await fs.mkdir(sourceDir, { recursive: true });
+            dirsToCreate.add(sourceDir);
             
             const fileName = `${baseName}.json`;
             const filePath = path.join(sourceDir, fileName);
@@ -3914,8 +3990,28 @@ class MagicVariantMgr implements DataMgr<MagicVariantEntry> {
             // 替换 {=bonusWeapon} 和 {=bonusWeaponDamage} 为 {@bonusweapon +数值}
             const finalProcessedData = processBonusReplacements(reorderedData);
 
-            await fs.writeFile(filePath, JSON.stringify(finalProcessedData, null, 2), 'utf-8');
-            trackOutputFile(`item/${sourceId}/${fileName}`, 'item', sourceId, id);
+            writeTasks.push({
+                filePath,
+                content: JSON.stringify(finalProcessedData, null, 2),
+                trackPath: `item/${sourceId}/${fileName}`,
+                sourceId,
+                uid: id,
+            });
+        }
+
+        // 预创建所有目录
+        for (const dir of dirsToCreate) {
+            await fs.mkdir(dir, { recursive: true });
+        }
+
+        // 分批并行写入文件（每批 100 个）
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < writeTasks.length; i += BATCH_SIZE) {
+            const batch = writeTasks.slice(i, i + BATCH_SIZE);
+            await Promise.all(batch.map(task =>
+                fs.writeFile(task.filePath, task.content, 'utf-8')
+                    .then(() => trackOutputFile(task.trackPath, 'item', task.sourceId, task.uid))
+            ));
         }
     }
 
@@ -4044,12 +4140,14 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
     }
     loadFluff(zh: SpellFluffFile | null, en: SpellFluffFile | null) {
         for (const item of en?.spellFluff || []) {
-            const name = item.ENG_name ? item.ENG_name.trim() : item.name.trim();
+            const name = item.ENG_name ? item.ENG_name.trim() : (item.name || '').trim();
+            if (!name) continue;
             const id = `${name}|${item.source}`;
             this.fluff.en.set(id, item);
         }
         for (const item of zh?.spellFluff || []) {
-            const name = item.ENG_name ? item.ENG_name.trim() : item.name.trim();
+            const name = item.ENG_name ? item.ENG_name.trim() : (item.name || '').trim();
+            if (!name) continue;
             const id = `${name}|${item.source}`;
             this.fluff.zh.set(id, item);
         }
@@ -4058,7 +4156,7 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
         if (spell.ENG_name) {
             return `${spell.ENG_name.trim()}|${spell.source}`;
         }
-        return `${spell.name.trim()}|${spell.source}`;
+        return `${(spell.name || '').trim()}|${spell.source}`;
     }
     loadData(zh: SpellFile | null, en: SpellFile | null) {
         this.raw.zh.push(...(zh?.spell || []));
@@ -4260,7 +4358,7 @@ class SpellMgr implements DataMgr<SpellFileEntry> {
         const outputDir = './output/spell';
 
         for (const [id, spellData] of this.db) {
-            const sourceId = spellData.mainSource.source;
+            const sourceId = escapeFileName(spellData.mainSource.source);
             const sourceDir = path.join(outputDir, sourceId);
             await fs.mkdir(sourceDir, { recursive: true });
 
@@ -4857,6 +4955,8 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
     async generateFiles() {
         const outputDir = './output/bestiary';
         const writtenFileNamesBySource = new Map<string, Set<string>>();
+        const writeTasks: { filePath: string; content: string; trackPath: string; sourceId: string; uid: string }[] = [];
+        const dirsToCreate = new Set<string>();
 
         for (const [id, bestiaryData] of this.db) {
             // 处理 fluff 数据中的特定格式文本
@@ -4900,7 +5000,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                     // 如果原始数据中initiative是对象
                     if (processedData.initiative.initiative !== undefined) {
                         // 如果initiative.initiative已有值，使用它计算average
-                        if (dex !== undefined && !dex.special) {
+                        if (dex != null && !dex.special) {
                             const dexMod = Math.floor((dex - 10) / 2);
                             processedData.initiative.average = 10 + processedData.initiative.initiative;
                             // 如果有advantageMode，需要调整
@@ -4910,7 +5010,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
                                 processedData.initiative.average -= 5;
                             }
                         }
-                    } else if (dex !== undefined && !dex.special) {
+                    } else if (dex != null && !dex.special) {
                         // 如果没有initiative.initiative，需要计算
                         // 计算熟练加值（使用正确的crToPb逻辑）
                         const getProficiencyBonus = (cr: number) => {
@@ -4944,7 +5044,7 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
             } else {
                 // 如果initiative未定义，且dex存在且没有special属性，生成initiative
                 const dex = processedData.dex;
-                if (dex !== undefined && !dex.special) {
+                if (dex != null && !dex.special) {
                     const dexMod = Math.floor((dex - 10) / 2);
                     processedData.initiative = {
                         initiative: dexMod,
@@ -5027,9 +5127,9 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
             const baseName = escapeFileName(mwUtil.getMwTitle(
                 reorderedData.displayName?.en || reorderedData.displayName?.zh || id
             ));
-            const sourceId = reorderedData.mainSource?.source || 'UNKNOWN';
+            const sourceId = escapeFileName(reorderedData.mainSource?.source || 'UNKNOWN');
             const sourceDir = path.join(outputDir, sourceId);
-            await fs.mkdir(sourceDir, { recursive: true });
+            dirsToCreate.add(sourceDir);
 
             const preferredFileName = `${baseName}.json`;
             if (!writtenFileNamesBySource.has(sourceId)) {
@@ -5046,8 +5146,28 @@ class BestiaryMgr implements DataMgr<MonsterFileEntry> {
             }
             this.transformSpellcastingSpells(reorderedData);
             const filePath = path.join(sourceDir, fileName);
-            await fs.writeFile(filePath, JSON.stringify(reorderedData, null, 2), 'utf-8');
-            trackOutputFile(`bestiary/${sourceId}/${fileName}`, 'bestiary', sourceId, id);
+            writeTasks.push({
+                filePath,
+                content: JSON.stringify(reorderedData, null, 2),
+                trackPath: `bestiary/${sourceId}/${fileName}`,
+                sourceId,
+                uid: id,
+            });
+        }
+
+        // 预创建所有目录
+        for (const dir of dirsToCreate) {
+            await fs.mkdir(dir, { recursive: true });
+        }
+
+        // 分批并行写入文件（每批 100 个）
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < writeTasks.length; i += BATCH_SIZE) {
+            const batch = writeTasks.slice(i, i + BATCH_SIZE);
+            await Promise.all(batch.map(task =>
+                fs.writeFile(task.filePath, task.content, 'utf-8')
+                    .then(() => trackOutputFile(task.trackPath, 'bestiary', task.sourceId, task.uid))
+            ));
         }
     }
 }
@@ -5063,6 +5183,13 @@ const loadBilingualFile = async <T>(relativePath: string): Promise<{ en: T; zh: 
     const enPath = path.join(config.DATA_EN_DIR, relativePath);
     const zhPath = path.join(config.DATA_ZH_DIR, relativePath);
     const [en, zh] = await Promise.all([readJson<T>(enPath), readJson<T>(zhPath)]);
+
+    // homebrew 模式：合并对应的 homebrew 分类数据
+    const homebrewCategories = HOMEBREW_FILE_MAP[relativePath];
+    if (isHomebrewMode && homebrewCategories) {
+        return await mergeHomebrewBilingual(en as Record<string, any>, zh as Record<string, any>, homebrewCategories) as { en: T; zh: T };
+    }
+
     return { en, zh };
 };
 
@@ -5089,6 +5216,17 @@ const loadIndexedSpellData = async (): Promise<{ en: SpellFile; zh: SpellFile }>
         loadSpellSet(config.DATA_EN_DIR, enIndex),
         loadSpellSet(config.DATA_ZH_DIR, zhIndex),
     ]);
+
+    // homebrew 模式：合并 homebrew spell 数据
+    if (isHomebrewMode) {
+        const [enHb, zhHb] = await Promise.all([
+            loadHomebrewByKeys('en', ['spell']),
+            loadHomebrewByKeys('zh', ['spell']),
+        ]);
+        if (enHb.spell) en.spell.push(...enHb.spell);
+        if (zhHb.spell) zh.spell.push(...zhHb.spell);
+    }
+
     return { en, zh };
 };
 
@@ -5140,6 +5278,17 @@ const loadIndexedBestiaryData = async (): Promise<{ en: MonsterFile; zh: Monster
         loadBestiarySet(config.DATA_EN_DIR, enIndex),
         loadBestiarySet(config.DATA_ZH_DIR, zhIndex),
     ]);
+
+    // homebrew 模式：合并 homebrew monster 数据（homebrew 文件中键名为 'monster'，扫描所有目录包括 collection）
+    if (isHomebrewMode) {
+        const [enHb, zhHb] = await Promise.all([
+            loadHomebrewByKeys('en', ['monster']),
+            loadHomebrewByKeys('zh', ['monster']),
+        ]);
+        if (enHb.monster) en.monster.push(...enHb.monster);
+        if (zhHb.monster) zh.monster.push(...zhHb.monster);
+    }
+
     return { en, zh };
 };
 
@@ -5268,6 +5417,7 @@ let isnavpillIds = new Set<string>();
         printProgress('json 索引已加载');
 
         // 加载数据到各个管理器
+        const loadStart = Date.now();
         itemFluffMgr.loadData(itemFluffFiles.zh, itemFluffFiles.en);
         bookMgr.loadData(bookFiles.zh, bookFiles.en);
         featMgr.loadData(featFiles.zh, featFiles.en);
@@ -5275,18 +5425,25 @@ let isnavpillIds = new Set<string>();
         itemTypeMgr.loadData(itemBaseFiles.zh, itemBaseFiles.en);
         itemMasteryMgr.loadData(itemBaseFiles.zh, itemBaseFiles.en);
         baseItemMgr.loadData(itemBaseFiles.zh, itemBaseFiles.en);
+        printProgress(`基础数据加载完成 (${((Date.now() - loadStart) / 1000).toFixed(2)}s)`);
         
         // 在 baseItemMgr 加载完成后，收集基础物品列表并生成 itemTypeCollection.json
         itemTypeMgr.collectBaseItems(baseItemMgr);
 
+        const itemStart = Date.now();
         itemMgr.loadData(itemFiles.zh, itemFiles.en);
         magicVariantMgr.loadData(magicVariantFiles.zh, magicVariantFiles.en);
+        printProgress(`物品数据加载完成 (${((Date.now() - itemStart) / 1000).toFixed(2)}s)`);
 
+        const spellStart = Date.now();
         spellMgr.loadFluff(indexedData.spellFluffFiles.zh, indexedData.spellFluffFiles.en);
         spellMgr.loadData(indexedData.spellFiles.zh, indexedData.spellFiles.en);
+        printProgress(`法术数据加载完成 (${((Date.now() - spellStart) / 1000).toFixed(2)}s)`);
 
+        const bestiaryStart = Date.now();
         bestiaryMgr.loadFluff(indexedData.bestiaryFluffFiles.zh, indexedData.bestiaryFluffFiles.en);
         bestiaryMgr.loadData(indexedData.bestiaryFiles.zh, indexedData.bestiaryFiles.en);
+        printProgress(`怪物数据加载完成 (${((Date.now() - bestiaryStart) / 1000).toFixed(2)}s)`);
         
         // 统一收集所有需要添加 navpills 和 isnavpill 的 id
         const navpillsUids = new Set(tbuiNavPillsConfig.uids || []);
@@ -5356,6 +5513,7 @@ let isnavpillIds = new Set<string>();
         if (!generatePages) {
             // npm run start: 只生成基础数据到 output 目录
             // 并行执行所有输出任务：书籍输出与其他类别 JSON 同时运行
+            const outputStart = Date.now();
             const [
                 bookResult,
                 featResult,
@@ -5419,6 +5577,7 @@ let isnavpillIds = new Set<string>();
             printProgress(`[prepareData] trap 完成 (${trapResult.count})`);
             printProgress(`[prepareData] class 完成 (${classResult.classCount})`);
             printProgress(`[prepareData] subclass 完成 (${classResult.subclassCount})`);
+            printProgress(`所有输出任务完成 (${((Date.now() - outputStart) / 1000).toFixed(2)}s)`);
 
             classProfileCounts = { class: classResult.classCount, subclass: classResult.subclassCount };
 

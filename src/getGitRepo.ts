@@ -2,7 +2,172 @@ import fs from 'fs/promises';
 import { execSync } from 'child_process';
 import path from 'path';
 import config from './config.js';
-import { resolveCopiesInBothDirectories } from './copyResolver.js';
+import { resolveCopiesInBothDirectories, resolveCopiesInHomebrewDirectories } from './copyResolver.js';
+
+// ==================== Homebrew 数据重组：collection → 类别目录 ====================
+
+/**
+ * 数据键名 → 类别目录名的映射。
+ * 未列出的键（如 card, citation, sense 等）无对应目录，保留在 collection 中。
+ */
+const KEY_TO_DIR: Record<string, string> = {
+    // 直接对应
+    'action': 'action',
+    'adventure': 'adventure',
+    'adventureData': 'adventure',
+    'background': 'background',
+    'backgroundFluff': 'background',
+    'baseitem': 'baseitem',
+    'book': 'book',
+    'bookData': 'book',
+    'boon': 'boon',
+    'charoption': 'charoption',
+    'class': 'class',
+    'classFeature': 'class',
+    'classFluff': 'class',
+    'condition': 'condition',
+    'conditionFluff': 'condition',
+    'cult': 'cult',
+    'deck': 'deck',
+    'deity': 'deity',
+    'disease': 'disease',
+    'diseaseFluff': 'disease',
+    'feat': 'feat',
+    'featFluff': 'feat',
+    'hazard': 'hazard',
+    'item': 'item',
+    'itemEntry': 'item',
+    'itemFluff': 'item',
+    'itemGroup': 'item',
+    'itemMastery': 'item',
+    'itemProperty': 'item',
+    'itemType': 'item',
+    'itemTypeAdditionalEntries': 'item',
+    'language': 'language',
+    'languageFluff': 'language',
+    'legendaryGroup': 'creature',
+    'magicvariant': 'magicvariant',
+    'makebrewCreatureTrait': 'makebrew',
+    'monster': 'creature',
+    'monsterFluff': 'creature',
+    'object': 'object',
+    'objectFluff': 'object',
+    'optionalfeature': 'optionalfeature',
+    'optionalfeatureFluff': 'optionalfeature',
+    'race': 'race',
+    'raceFluff': 'race',
+    'recipe': 'recipe',
+    'recipeFluff': 'recipe',
+    'reward': 'reward',
+    'rewardFluff': 'reward',
+    'spell': 'spell',
+    'spellFluff': 'spell',
+    'subclass': 'subclass',
+    'subclassFeature': 'subclass',
+    'subclassFluff': 'subclass',
+    'subrace': 'subrace',
+    'table': 'table',
+    'trap': 'trap',
+    'variantrule': 'variantrule',
+    'vehicle': 'vehicle',
+    'vehicleFluff': 'vehicle',
+    'vehicleUpgrade': 'vehicle',
+};
+
+/**
+ * 将 collection 目录下文件中分散的数组剪切到对应类别目录。
+ * 这样 npm run start:homebrew 只需扫描类别目录，无需额外处理 collection。
+ * @param homebrewDir homebrew 根目录（en 或 zh）
+ */
+const reorganizeHomebrewData = async (homebrewDir: string): Promise<void> => {
+    const collectionDir = path.join(homebrewDir, 'collection');
+    let files: string[];
+    try {
+        files = await fs.readdir(collectionDir);
+    } catch {
+        console.log(`[${getTimestamp()}] collection 目录不存在，跳过重组: ${collectionDir}`);
+        return;
+    }
+
+    const jsonFiles = files.filter(f => f.endsWith('.json'));
+    if (jsonFiles.length === 0) return;
+
+    console.log(`[${getTimestamp()}] 开始重组 collection 数据 (${jsonFiles.length} 个文件)...`);
+
+    let movedCount = 0;
+    let processedFiles = 0;
+
+    for (const file of jsonFiles) {
+        const filePath = path.join(collectionDir, file);
+        let data: Record<string, any>;
+        try {
+            const content = await fs.readFile(filePath, 'utf-8');
+            data = JSON.parse(content);
+        } catch {
+            continue;
+        }
+
+        const keys = Object.keys(data);
+        const keysToMove: string[] = [];
+        const keysByDir = new Map<string, string[]>(); // dir → keys
+
+        for (const key of keys) {
+            // 跳过元数据和非数组
+            if (key.startsWith('_') || key.startsWith('$') || key.startsWith('foundry')) continue;
+            if (!Array.isArray(data[key])) continue;
+            if (data[key].length === 0) continue;
+
+            const dir = KEY_TO_DIR[key];
+            if (!dir) continue;
+
+            keysToMove.push(key);
+            if (!keysByDir.has(dir)) keysByDir.set(dir, []);
+            keysByDir.get(dir)!.push(key);
+        }
+
+        if (keysToMove.length === 0) continue;
+        processedFiles++;
+
+        // 将数组剪切到对应目录
+        for (const [dir, dirKeys] of keysByDir) {
+            const targetDir = path.join(homebrewDir, dir);
+            await fs.mkdir(targetDir, { recursive: true });
+
+            const targetFilePath = path.join(targetDir, file);
+            let targetData: Record<string, any> = {};
+
+            // 如果目标文件已存在，读取并合并
+            try {
+                const existingContent = await fs.readFile(targetFilePath, 'utf-8');
+                targetData = JSON.parse(existingContent);
+            } catch {
+                // 文件不存在或解析失败，使用空对象
+            }
+
+            for (const key of dirKeys) {
+                const arr = data[key];
+                if (Array.isArray(targetData[key])) {
+                    targetData[key].push(...arr);
+                } else {
+                    targetData[key] = arr;
+                }
+                movedCount += arr.length;
+            }
+
+            await fs.writeFile(targetFilePath, JSON.stringify(targetData, null, 2), 'utf-8');
+        }
+
+        // 从原 collection 文件中删除已剪切的键
+        for (const key of keysToMove) {
+            delete data[key];
+        }
+
+        // 保存修改后的 collection 文件
+        await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    }
+
+    console.log(`[${getTimestamp()}] collection 数据重组完成: 处理 ${processedFiles} 个文件，移动 ${movedCount} 条数据`);
+};
 
 interface ChangedArray {
     name: string;
@@ -202,7 +367,8 @@ const analyzeJsonDiff = (oldContent: string, newContent: string): ChangedArray[]
 
 const getCommitInfo = (commitHash: string, repoDir: string): CommitInfo => {
     try {
-        const result = execSync(`git show ${commitHash} --format='%H||%s||%an||%ad' --date=iso-strict`, {
+        // -s / --no-patch: 只输出 commit 元信息，不输出 patch（blobless clone 下 patch 会触发网络拉取所有 blob）
+        const result = execSync(`git show -s ${commitHash} --format='%H||%s||%an||%ad' --date=iso-strict`, {
             cwd: repoDir,
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'ignore']
@@ -623,9 +789,257 @@ const getRepoData = async (
     }
 };
 
+/**
+ * 为 homebrew 仓库生成 replace-logs。
+ * 分别处理英文和中文 homebrew 仓库，合并输出到 replace-logs-homebrew.json。
+ */
+const generateHomebrewReplaceLogs = async (
+    enRepoDir: string,
+    zhRepoDir: string,
+    outputPath: string
+) => {
+    const processRepo = async (repoDir: string, locale: 'en' | 'zh') => {
+        const result = {
+            commit: { hash: '', message: '', author: '', date: '' } as CommitInfo,
+            previousCommit: { hash: '', message: '', author: '', date: '' } as CommitInfo,
+            changedFiles: [] as ChangedFile[],
+            generatedAt: new Date().toISOString()
+        };
+
+        try {
+            console.log(`[${getTimestamp()}]   [${locale}] 读取 commit 信息...`);
+            const latestCommit = execSync('git rev-parse HEAD', {
+                cwd: repoDir,
+                encoding: 'utf-8',
+                stdio: ['ignore', 'pipe', 'ignore']
+            }).trim();
+
+            let previousCommit = '';
+            try {
+                previousCommit = execSync('git rev-parse HEAD~1', {
+                    cwd: repoDir,
+                    encoding: 'utf-8',
+                    stdio: ['ignore', 'pipe', 'ignore']
+                }).trim();
+            } catch {
+                console.log(`[${getTimestamp()}]   [${locale}] 仓库 depth=1，跳过 previous commit 对比`);
+            }
+
+            result.commit = getCommitInfo(latestCommit, repoDir);
+            if (previousCommit) {
+                result.previousCommit = getCommitInfo(previousCommit, repoDir);
+            }
+
+            if (previousCommit) {
+                console.log(`[${getTimestamp()}]   [${locale}] 计算 diff...`);
+                const diffOutput = execSync(`git diff ${previousCommit} ${latestCommit} --name-status`, {
+                    cwd: repoDir,
+                    encoding: 'utf-8',
+                    stdio: ['ignore', 'pipe', 'ignore']
+                });
+
+                const lines = diffOutput.trim().split('\n');
+                for (const line of lines) {
+                    const [status, filePath] = line.split('\t');
+                    if (!filePath) continue;
+
+                    const jsonMatch = filePath.match(/(.+\.json)$/);
+                    if (!jsonMatch) continue;
+
+                    // blobless clone 下跳过逐文件内容比对（避免逐个网络拉取旧版 blob）
+                    let fileStatus: 'added' | 'modified' | 'deleted' = 'modified';
+                    if (status === 'A') fileStatus = 'added';
+                    if (status === 'D') fileStatus = 'deleted';
+
+                    result.changedFiles.push({
+                        filePath: jsonMatch[1],
+                        locale,
+                        status: fileStatus,
+                        changedArrays: []
+                    });
+                }
+            }
+            console.log(`[${getTimestamp()}]   [${locale}] 完成，变更文件数: ${result.changedFiles.length}`);
+        } catch (error) {
+            console.warn(`[${getTimestamp()}] 生成 homebrew replace-logs 失败 (${locale}):`, error);
+        }
+
+        return result;
+    };
+
+    const [enResult, zhResult] = await Promise.all([
+        processRepo(enRepoDir, 'en'),
+        processRepo(zhRepoDir, 'zh')
+    ]);
+
+    const output = { en: enResult, zh: zhResult, generatedAt: new Date().toISOString() };
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+    console.log(`[${getTimestamp()}] 已生成 replace-logs-homebrew.json: ${outputPath}`);
+};
+
+const HOMEBREW_SPARSE_PATTERNS = [
+    '*.json',
+    '**/*.json',
+];
+
+/**
+ * 克隆单个 homebrew 仓库到目标目录，使用稀疏签出跳过不需要的目录和文件。
+ */
+const cloneHomebrewRepo = async (
+    repoUrl: string,
+    targetDir: string,
+    execOptions: { stdio: 'inherit'; env: NodeJS.ProcessEnv }
+) => {
+    console.log(`[${getTimestamp()}] 正在克隆 homebrew 仓库: ${repoUrl}`);
+
+    // 安全删除目标目录
+    const safeRmdir = async (dir: string, retries = 3) => {
+        for (let i = 0; i < retries; i++) {
+            try {
+                await fs.rm(dir, { recursive: true, force: true });
+                return true;
+            } catch (err: any) {
+                if (err.code === 'EBUSY' && i < retries - 1) {
+                    await new Promise(r => setTimeout(r, 1000));
+                } else {
+                    throw err;
+                }
+            }
+        }
+        return false;
+    };
+
+    await safeRmdir(targetDir);
+    await fs.mkdir(path.dirname(targetDir), { recursive: true });
+
+    // 使用 --filter=blob:none (blobless clone) + --no-checkout，
+    // 仅下载 tree 对象，checkout 时按稀疏签出模式按需拉取 JSON 文件
+    const cloneArgs = ['clone', '--depth', '2', '--filter=blob:none', '--no-checkout', repoUrl, targetDir];
+    console.log(`[${getTimestamp()}] 执行: git ${cloneArgs.join(' ')}`);
+    execSync(`git ${cloneArgs.join(' ')}`, execOptions);
+
+    // 初始化稀疏签出（no-cone 模式支持排除模式）
+    execSync(`git -C ${targetDir} sparse-checkout init --no-cone`, execOptions);
+
+    // 写入稀疏签出模式
+    await fs.writeFile(
+        path.join(targetDir, '.git', 'info', 'sparse-checkout'),
+        HOMEBREW_SPARSE_PATTERNS.join('\n') + '\n',
+        'utf-8'
+    );
+
+    // 执行签出
+    execSync(`git -C ${targetDir} checkout`, execOptions);
+    console.log(`[${getTimestamp()}] homebrew 仓库克隆完成: ${targetDir}`);
+};
+
+/**
+ * 克隆中英文 homebrew 仓库并处理数据。
+ */
+const getHomebrewRepoData = async (
+    enRepoUrl: string,
+    zhRepoUrl: string,
+    enTargetDir: string,
+    zhTargetDir: string
+) => {
+    const proxy = buildProxyEnv();
+    if (proxy.sources.length > 0) {
+        console.log(
+            `[${getTimestamp()}] 检测到代理来源(${proxy.sources.join(
+                '+'
+            )})，优先级 env > git > windows`
+        );
+    }
+    const execOptions = { stdio: 'inherit' as const, env: proxy.env };
+
+    console.log(`[${getTimestamp()}] 开始克隆 homebrew 数据...`);
+
+    // 克隆英文 homebrew
+    try {
+        await cloneHomebrewRepo(enRepoUrl, enTargetDir, execOptions);
+    } catch (error) {
+        console.error(`[${getTimestamp()}] 英文 homebrew 仓库克隆失败: ${error}`);
+    }
+
+    // 克隆中文 homebrew
+    try {
+        await cloneHomebrewRepo(zhRepoUrl, zhTargetDir, execOptions);
+    } catch (error) {
+        console.error(`[${getTimestamp()}] 中文 homebrew 仓库克隆失败: ${error}`);
+    }
+
+    // 生成 replace-logs-homebrew.json
+    const commonParentDir = getCommonParentDir(config.DATA_ZH_DIR, config.DATA_EN_DIR);
+    const replaceLogsPath = path.join(commonParentDir, 'replace-logs-homebrew.json');
+
+    const enExists = await fs.access(enTargetDir).then(() => true).catch(() => false);
+    const zhExists = await fs.access(zhTargetDir).then(() => true).catch(() => false);
+
+    if (enExists && zhExists) {
+        console.log(`[${getTimestamp()}] 生成 homebrew replace-logs...`);
+        await generateHomebrewReplaceLogs(enTargetDir, zhTargetDir, replaceLogsPath);
+    } else {
+        console.warn(`[${getTimestamp()}] homebrew 仓库目录不完整，跳过 replace-logs 生成`);
+    }
+
+    // 解析 _copy 引用
+    // homebrew 仓库没有 data/ 子目录，JSON 文件直接在仓库根目录下的各子目录中
+    const enHomebrewDataPath = enTargetDir;
+    const zhHomebrewDataPath = zhTargetDir;
+    const enMainDataPath = path.join(path.dirname(config.DATA_EN_DIR), 'data');
+    const zhMainDataPath = path.join(path.dirname(config.DATA_ZH_DIR), 'data');
+
+    const enHomebrewDataExists = await fs.access(enHomebrewDataPath).then(() => true).catch(() => false);
+    const zhHomebrewDataExists = await fs.access(zhHomebrewDataPath).then(() => true).catch(() => false);
+
+    if (!enHomebrewDataExists || !zhHomebrewDataExists) {
+        console.error(`[${getTimestamp()}] 错误: homebrew 目录不存在，无法处理 _copy 引用`);
+        console.error(`[${getTimestamp()}]   - en homebrew: ${enHomebrewDataExists ? '存在' : '不存在'}`);
+        console.error(`[${getTimestamp()}]   - zh homebrew: ${zhHomebrewDataExists ? '存在' : '不存在'}`);
+        return;
+    }
+
+    console.log(`[${getTimestamp()}] 开始处理 homebrew _copy 引用...`);
+
+    await resolveCopiesInHomebrewDirectories(
+        enMainDataPath,
+        zhMainDataPath,
+        enHomebrewDataPath,
+        zhHomebrewDataPath
+    );
+
+    console.log(`[${getTimestamp()}] homebrew _copy 引用处理完成`);
+
+    // 重组 collection 数据：将分散的数组剪切到对应类别目录
+    console.log(`[${getTimestamp()}] 开始重组 homebrew collection 数据...`);
+    await Promise.all([
+        reorganizeHomebrewData(enHomebrewDataPath),
+        reorganizeHomebrewData(zhHomebrewDataPath),
+    ]);
+    console.log(`[${getTimestamp()}] homebrew collection 数据重组完成`);
+};
+
 (async () => {
     const zhRoot = path.dirname(config.DATA_ZH_DIR);
     const enRoot = path.dirname(config.DATA_EN_DIR);
+
+    const isHomebrew = process.argv.includes('--homebrew');
+
+    if (isHomebrew) {
+        const enHomebrewDir = path.join(enRoot, 'homebrew');
+        const zhHomebrewDir = path.join(zhRoot, 'homebrew');
+
+        console.log(`[${getTimestamp()}] === Homebrew 模式 ===`);
+        await getHomebrewRepoData(
+            'https://github.com/TheGiddyLimit/homebrew.git',
+            'https://github.com/tjliqy/homebrew.git',
+            enHomebrewDir,
+            zhHomebrewDir
+        );
+        return;
+    }
+
     const patchedRoot = './input/patched/';
 
     // 预创建目录
